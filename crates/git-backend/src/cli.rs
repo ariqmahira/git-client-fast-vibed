@@ -158,3 +158,15 @@ pub(crate) fn run_with_input(
         Err(Error::Engine(format!("{} failed: {msg}", display(args))))
     }
 }
+
+/// Runs git and waits, ignoring its exit status (for maintenance commands
+/// whose non-zero exit just reports state, like `update-index --refresh`).
+pub(crate) fn run_quiet(git_dir: &Path, workdir: Option<&Path>, args: &[&str]) -> Result<()> {
+    base(git_dir, workdir)
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|_| ())
+        .map_err(|e| Error::Engine(format!("cannot run git: {e}")))
+}

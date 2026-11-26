@@ -422,6 +422,16 @@ impl GitBackend for Git2Backend {
         self.with_repo_mut(write::stash_pop)
     }
 
+    #[tracing::instrument(level = "debug", skip_all)]
+    fn refresh_index(&self) -> Result<()> {
+        self.with_repo(|r| match r.workdir() {
+            // Through git itself: it takes the index lock and gives up
+            // harmlessly if someone else is writing the index.
+            Some(wd) => cli::run_quiet(r.path(), Some(wd), &["update-index", "-q", "--refresh"]),
+            None => Ok(()),
+        })
+    }
+
     #[tracing::instrument(level = "debug", skip_all, fields(op = ?op))]
     fn network(&self, op: fgc_core::NetworkOp, progress: &dyn Fn(&str)) -> Result<String> {
         self.with_repo(|r| write::network(r, op, progress))

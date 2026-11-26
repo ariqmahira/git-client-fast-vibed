@@ -63,7 +63,11 @@ jobs:
           path: bench-repos
           key: bench-repos-${{ runner.os }}-${{ hashFiles('crates/fixtures/**') }}
       - name: Generate bench repos
-        run: ./target/release/fgc-fixtures bench-repos small history-200k wide-100k
+        run: |
+          ./target/release/fgc-fixtures bench-repos small history-200k wide-100k
+          # Restoring from the cache changes every file's mtime/inode, which
+          # makes the index's stat data stale; refresh it as a user's git would.
+          for r in small history-200k wide-100k; do git -C bench-repos/$r update-index -q --refresh || true; done
       - name: Probe budgets
         run: |
           set -euo pipefail

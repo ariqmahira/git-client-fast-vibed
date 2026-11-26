@@ -34,6 +34,9 @@ pub enum WriteOp {
     },
     StashPush(Option<String>),
     StashPop,
+    /// Maintenance: refresh the index's stat cache (sent by the actor itself
+    /// after a slow status, not by the UI).
+    RefreshIndex,
 }
 
 fn paths_arg(paths: &[PathBuf]) -> String {
@@ -81,6 +84,7 @@ impl WriteOp {
             WriteOp::DeleteBranch { name, .. } => format!("Delete branch {name}"),
             WriteOp::StashPush(_) => "Stash changes".into(),
             WriteOp::StashPop => "Pop stash".into(),
+            WriteOp::RefreshIndex => "Refresh index".into(),
         }
     }
 
@@ -131,6 +135,7 @@ impl WriteOp {
             WriteOp::StashPush(Some(m)) => format!("git stash push -u -m {}", quote(m)),
             WriteOp::StashPush(None) => "git stash push -u".into(),
             WriteOp::StashPop => "git stash pop".into(),
+            WriteOp::RefreshIndex => "git update-index -q --refresh".into(),
         }
     }
 
@@ -142,6 +147,7 @@ impl WriteOp {
                 | WriteOp::Unstage(_)
                 | WriteOp::StageHunk { .. }
                 | WriteOp::UnstageHunk { .. }
+                | WriteOp::RefreshIndex
         )
     }
 }

@@ -107,6 +107,14 @@ pub trait GitBackend: Send + Sync {
         Err(Error::Unsupported("stash_pop".into()))
     }
 
+    /// Refreshes the index's cached file stat data (`git update-index -q
+    /// --refresh`), so later status runs can trust timestamps instead of
+    /// re-hashing files. Needed when the stat data went stale (a copied or
+    /// restored working tree): libgit2's status never writes it back.
+    fn refresh_index(&self) -> Result<()> {
+        Err(Error::Unsupported("refresh_index".into()))
+    }
+
     // ---- network (M6) ----
 
     /// Runs a network operation, streaming git's progress lines to

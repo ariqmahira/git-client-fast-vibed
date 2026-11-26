@@ -179,6 +179,8 @@ struct Shared {
     engine: GraphEngine,
     /// Last full status, so targeted updates can be merged into it.
     status: Mutex<Option<StatusSnapshot>>,
+    /// The index stat cache was refreshed after a slow status (once per actor).
+    index_refreshed: AtomicBool,
     writer: Mutex<Option<mpsc::Sender<(u64, WriteOp)>>>,
     network: Mutex<Option<mpsc::Sender<(u64, NetworkOp)>>>,
 }
@@ -292,6 +294,7 @@ impl RepoActor {
             workdir_diff_gen: AtomicU64::new(0),
             shutdown: AtomicBool::new(false),
             status: Mutex::new(None),
+            index_refreshed: AtomicBool::new(false),
             writer: Mutex::new(None),
             network: Mutex::new(None),
         });
@@ -427,11 +430,20 @@ fn run_write(be: &dyn GitBackend, op: &WriteOp) -> Result<()> {
         WriteOp::DeleteBranch { name, force } => be.delete_branch(name, *force),
         WriteOp::StashPush(m) => be.stash_push(m.as_deref()),
         WriteOp::StashPop => be.stash_pop(),
+        WriteOp::RefreshIndex => be.refresh_index(),
     }
 }
 
 fn writer(shared: Arc<Shared>, rx: mpsc::Receiver<(u64, WriteOp)>) {
     while let Ok((id, op)) = rx.recv() {
+        if op == WriteOp::RefreshIndex {
+            // Background maintenance: no progress UI, and the follow-up
+            // status should now be fast.
+            if run_write(&*shared.backend, &op).is_ok() {
+                shared.submit(Command::Status);
+            }
+            continue;
+        }
         let label = op.label();
         let command = op.git_command();
         (shared.sink)(Event::OpStarted {
@@ -594,11 +606,20 @@ fn run(shared: &Arc<Shared>, job: Job) {
         }
         Command::Status => {
             let opts = StatusOpts::default();
+            let started = Instant::now();
             if let Some(st) = shared.timed(
                 "status",
                 || be.status(&opts),
                 |s| format!("{} entries", s.entries.len()),
             ) {
+                // A slow full status usually means stale stat data in the
+                // index (libgit2 re-hashes those files every time and never
+                // writes the result back). Let git refresh it, once.
+                if started.elapsed() > Duration::from_millis(150)
+                    && !shared.index_refreshed.swap(true, Ordering::SeqCst)
+                {
+                    shared.submit(Command::Write(WriteOp::RefreshIndex));
+                }
                 *shared.status.lock().unwrap() = Some(st.clone());
                 sink(Event::Status(Arc::new(st)));
             }

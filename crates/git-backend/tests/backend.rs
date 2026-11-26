@@ -1134,3 +1134,37 @@ fn file_url(p: &std::path::Path) -> String {
     let s = p.display().to_string().replace('\\', "/");
     format!("file:///{}", s.trim_start_matches('/'))
 }
+
+#[test]
+fn refresh_index_fixes_stale_stat_data() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    fgc_fixtures::wide_tree(d, 300).unwrap();
+    // Make every file's stat data stale without changing content (what a
+    // copy or a restore from a cache does).
+    for entry in std::fs::read_dir(d.join("pkg0000")).unwrap() {
+        let p = entry.unwrap().path();
+        let f = std::fs::OpenOptions::new().write(true).open(&p).unwrap();
+        f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(86_400))
+            .unwrap();
+    }
+    let stale = fgc_fixtures::git_cmd(d)
+        .args(["diff-files", "--quiet"])
+        .status()
+        .unwrap();
+    assert!(
+        !stale.success(),
+        "stat data should look stale before the refresh"
+    );
+    let be = Git2Backend::open(d).unwrap();
+    assert!(be.status(&StatusOpts::default()).unwrap().is_clean());
+    be.refresh_index().unwrap();
+    let fresh = fgc_fixtures::git_cmd(d)
+        .args(["diff-files", "--quiet"])
+        .status()
+        .unwrap();
+    assert!(
+        fresh.success(),
+        "refresh_index should rewrite the stat cache"
+    );
+}
