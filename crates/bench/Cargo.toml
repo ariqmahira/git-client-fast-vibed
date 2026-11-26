@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 fgc-core.workspace = true
 fgc-git-backend.workspace = true
+fgc-graph.workspace = true
 fgc-fixtures.workspace = true
 clap.workspace = true
 serde.workspace = true

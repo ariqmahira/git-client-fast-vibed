@@ -9,6 +9,8 @@
 
 [profiles.small]
 open_to_first_page = 20
+open_to_first_screen = 20
+open_to_full_topology = 20
 walk_first_page = 10
 status = 20
 diff_workdir = 20
@@ -23,6 +25,14 @@ walk_cached_page = 10
 "open+refs" = 20
 status = 60
 diff_head_commit = 100   # plan: 5,000-line diff first screen
+# M2 graph engine
+open_to_first_screen = 400 # plan: open repo → first commits visible (graph drawn)
+open_to_full_topology = 200
+commit_dag = 60
+topo_sort = 60
+layout_full = 20
+geometry_window = 2        # per frame; frame budget is 8.3 ms
+relayout_new_commit = 10
 
 # 100k committed files (monorepo working tree).
 [profiles.wide-100k]
@@ -32,10 +42,20 @@ status_targeted = 150 # plan: working-tree status after a file save (watcher →
 status = 600
 diff_workdir = 600
 
-# linux.git, bare blob-less clone from scripts/fetch-bench-repos.sh.
+# linux.git, bare blob-less clone with a commit-graph file
+# (scripts/fetch-bench-repos.sh --commit-graph).
 [profiles.linux]
 walk_first_page = 100    # M1 acceptance: first 500 commits < 100 ms
 open_to_first_page = 400 # plan: open repo → first commits visible
 walk_next_page = 60
 walk_cached_page = 15
 "open+refs" = 60
+# M2 graph engine (1.5M commits)
+open_to_first_screen = 400   # M2 acceptance + plan §1: first screen < 400 ms
+open_to_full_topology = 1500 # full DAG + sort, background
+engine_complete = 2500       # all 1.5M rows laid out, background
+commit_dag = 500
+topo_sort = 800
+layout_full = 100
+geometry_window = 2          # per frame; frame budget is 8.3 ms
+relayout_new_commit = 50

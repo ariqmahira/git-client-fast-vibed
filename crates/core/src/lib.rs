@@ -10,6 +10,7 @@
 
 pub mod backend;
 pub mod commit;
+pub mod dag;
 pub mod diff;
 pub mod error;
 pub mod oid;
@@ -19,6 +20,7 @@ pub mod status;
 
 pub use backend::GitBackend;
 pub use commit::CommitMeta;
+pub use dag::{CommitDag, DagStats};
 pub use diff::{Diff, DiffLine, DiffSpec, DiffTarget, FileChange, FileDiff, Hunk, LineKind};
 pub use error::{Error, Result};
 pub use oid::Oid;

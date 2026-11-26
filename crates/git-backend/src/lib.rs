@@ -4,7 +4,9 @@
 //! one `Repository` per worker thread in a thread-local cache. The backend
 //! itself is cheap to share (`Arc<Git2Backend>`) across a worker pool.
 
+mod commit_graph;
 mod convert;
+mod dag;
 mod walk;
 
 use std::cell::RefCell;
@@ -15,9 +17,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use fgc_core::{
-    Change, CommitMeta, Diff, DiffLine, DiffSpec, DiffTarget, Error, FileChange, FileDiff,
-    GitBackend, Hunk, LineKind, Oid, RefInfo, RefKind, RepoInfo, Result, StatusEntry, StatusOpts,
-    StatusSnapshot,
+    Change, CommitDag, CommitMeta, Diff, DiffLine, DiffSpec, DiffTarget, Error, FileChange,
+    FileDiff, GitBackend, Hunk, LineKind, Oid, RefInfo, RefKind, RepoInfo, Result, StatusEntry,
+    StatusOpts, StatusSnapshot,
 };
 use git2::{DiffOptions, Repository, StatusOptions};
 
@@ -117,6 +119,7 @@ impl GitBackend for Git2Backend {
                 head,
                 head_branch,
                 is_shallow: repo.is_shallow(),
+                has_commit_graph: dag::has_commit_graph(repo),
             })
         })
     }
@@ -172,6 +175,39 @@ impl GitBackend for Git2Backend {
         let state = self.walks.lock().unwrap().get(tips);
         let mut state = state.lock().unwrap();
         self.with_repo(|repo| state.page(repo, tips, range))
+    }
+
+    #[tracing::instrument(level = "debug", skip_all, fields(n = oids.len()))]
+    fn commit_metas(&self, oids: &[Oid]) -> Result<Vec<CommitMeta>> {
+        self.with_repo(|repo| {
+            oids.iter()
+                .map(|oid| {
+                    repo.find_commit(to_git(*oid))
+                        .map(|c| walk::commit_meta(&c))
+                        .map_err(map_err)
+                })
+                .collect()
+        })
+    }
+
+    #[tracing::instrument(level = "debug", skip_all, fields(tips = tips.len()))]
+    fn commit_dag(&self, tips: &[Oid]) -> Result<CommitDag> {
+        self.with_repo(|repo| {
+            let graph = dag::open_graph(repo);
+            let dag = dag::build(repo, graph.as_ref(), tips)?;
+            tracing::debug!(
+                commits = dag.len(),
+                from_graph = dag.stats.from_commit_graph,
+                parsed = dag.stats.parsed,
+                "commit dag"
+            );
+            Ok(dag)
+        })
+    }
+
+    #[tracing::instrument(level = "debug", skip_all)]
+    fn write_commit_graph(&self) -> Result<()> {
+        self.with_repo(dag::write_commit_graph)
     }
 
     #[tracing::instrument(level = "debug", skip_all, fields(paths = opts.pathspec.len()))]

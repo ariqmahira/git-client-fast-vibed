@@ -519,3 +519,235 @@ fn trait_object_usable() {
     let dynbe: Arc<dyn GitBackend> = Arc::new(be);
     assert!(dynbe.repo_info().unwrap().head.is_some());
 }
+
+// ---- M2: commit DAG, metadata, commit-graph ----
+
+/// `git rev-list --parents` as oid → parents, for comparing DAGs.
+fn git_dag(dir: &Path, tips: &[&str]) -> HashMap<Oid, Vec<Oid>> {
+    let mut args = vec!["rev-list", "--parents"];
+    args.extend_from_slice(tips);
+    git(dir, &args)
+        .lines()
+        .map(|l| {
+            let mut it = l.split(' ').map(oid);
+            (it.next().unwrap(), it.collect())
+        })
+        .collect()
+}
+
+fn dag_map(d: &fgc_core::CommitDag) -> HashMap<Oid, Vec<Oid>> {
+    (0..d.len() as u32)
+        .map(|i| {
+            (
+                d.oids[i as usize],
+                d.parents_of(i)
+                    .iter()
+                    .map(|&p| d.oids[p as usize])
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+fn branch_tips(be: &Git2Backend) -> Vec<Oid> {
+    be.refs()
+        .unwrap()
+        .iter()
+        .filter(|r| r.kind == RefKind::LocalBranch)
+        .map(|r| r.target)
+        .collect()
+}
+
+fn synthetic(commits: u64, commit_graph: bool) -> (tempfile::TempDir, PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("h");
+    synthetic_history(
+        &dir,
+        &SyntheticSpec {
+            commits,
+            commit_graph,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    (tmp, dir)
+}
+
+#[test]
+fn commit_dag_from_commit_graph_matches_git() {
+    let (_tmp, dir) = synthetic(3_000, true);
+    let be = Git2Backend::open(&dir).unwrap();
+    assert!(be.repo_info().unwrap().has_commit_graph);
+    let dag = be.commit_dag(&branch_tips(&be)).unwrap();
+    assert_eq!(dag.stats.from_commit_graph, 3_000);
+    assert_eq!(dag.stats.parsed, 0);
+    assert_eq!(dag_map(&dag), git_dag(&dir, &["--branches"]));
+    // Commit times agree with libgit2.
+    let metas = be.commit_metas(&dag.oids[..50]).unwrap();
+    for (i, m) in metas.iter().enumerate() {
+        assert_eq!(m.oid, dag.oids[i]);
+        assert_eq!(m.commit_time, dag.commit_times[i]);
+    }
+}
+
+#[test]
+fn commit_dag_without_commit_graph_matches_git() {
+    let (_tmp, dir) = synthetic(1_500, false);
+    let be = Git2Backend::open(&dir).unwrap();
+    assert!(!be.repo_info().unwrap().has_commit_graph);
+    let dag = be.commit_dag(&branch_tips(&be)).unwrap();
+    assert_eq!((dag.stats.from_commit_graph, dag.stats.parsed), (0, 1_500));
+    assert_eq!(dag_map(&dag), git_dag(&dir, &["--branches"]));
+}
+
+#[test]
+fn commit_dag_hybrid_after_new_commits() {
+    // Graph written, then new commits (including a merge) on top: the new
+    // ones are parsed, the rest comes from the graph.
+    let (_tmp, dir) = synthetic(2_000, true);
+    git(&dir, &["checkout", "-q", "-b", "side", "main~5"]);
+    std::fs::write(dir.join("side.txt"), "side\n").unwrap();
+    git(&dir, &["add", "."]);
+    git(&dir, &["commit", "-qm", "side"]);
+    git(&dir, &["checkout", "-q", "main"]);
+    std::fs::write(dir.join("new.txt"), "new\n").unwrap();
+    git(&dir, &["add", "."]);
+    git(&dir, &["commit", "-qm", "new"]);
+    git(
+        &dir,
+        &["merge", "-q", "--no-ff", "-m", "merge side", "side"],
+    );
+
+    let be = Git2Backend::open(&dir).unwrap();
+    let dag = be.commit_dag(&branch_tips(&be)).unwrap();
+    assert_eq!(dag.stats.parsed, 3);
+    assert_eq!(dag.stats.from_commit_graph as usize + 3, dag.len());
+    assert_eq!(dag_map(&dag), git_dag(&dir, &["--branches"]));
+}
+
+#[test]
+fn write_commit_graph_and_split_chain() {
+    let (_tmp, dir) = synthetic(1_000, false);
+    let be = Git2Backend::open(&dir).unwrap();
+    be.write_commit_graph().unwrap();
+    assert!(be.repo_info().unwrap().has_commit_graph);
+    let tips = branch_tips(&be);
+    let dag = be.commit_dag(&tips).unwrap();
+    assert_eq!(dag.stats.from_commit_graph, 1_000);
+
+    // A second layer after new commits: a split chain of two files.
+    std::fs::write(dir.join("x.txt"), "x\n").unwrap();
+    git(&dir, &["add", "."]);
+    git(&dir, &["commit", "-qm", "x"]);
+    be.write_commit_graph().unwrap();
+    let chain = dir.join(".git/objects/info/commit-graphs/commit-graph-chain");
+    assert_eq!(std::fs::read_to_string(&chain).unwrap().lines().count(), 2);
+    let dag = be.commit_dag(&branch_tips(&be)).unwrap();
+    assert_eq!((dag.stats.from_commit_graph, dag.stats.parsed), (1_001, 0));
+    assert_eq!(dag_map(&dag), git_dag(&dir, &["--branches"]));
+}
+
+#[test]
+fn commit_dag_with_octopus_merge() {
+    // Octopus merges use the commit-graph's EDGE chunk.
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    git(d, &["init", "-q"]);
+    std::fs::write(d.join("base"), "b").unwrap();
+    git(d, &["add", "."]);
+    git(d, &["commit", "-qm", "base"]);
+    for b in ["a", "b", "c"] {
+        git(d, &["checkout", "-q", "-b", b, "main"]);
+        std::fs::write(d.join(b), b).unwrap();
+        git(d, &["add", "."]);
+        git(d, &["commit", "-qm", b]);
+    }
+    git(d, &["checkout", "-q", "main"]);
+    git(
+        d,
+        &["merge", "-q", "--no-ff", "-m", "octopus", "a", "b", "c"],
+    );
+    git(d, &["commit-graph", "write", "--reachable"]);
+    let be = Git2Backend::open(d).unwrap();
+    let dag = be.commit_dag(&branch_tips(&be)).unwrap();
+    assert_eq!(dag.stats.parsed, 0);
+    let map = dag_map(&dag);
+    assert!(
+        map.values().any(|p| p.len() == 4),
+        "octopus merge has 4 parents"
+    );
+    assert_eq!(map, git_dag(d, &["--branches"]));
+}
+
+#[test]
+fn corrupt_commit_graph_falls_back_to_parsing() {
+    let (_tmp, dir) = synthetic(500, true);
+    let path = dir.join(".git/objects/info/commit-graph");
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes.truncate(bytes.len() / 2);
+    let _ = std::fs::remove_file(&path);
+    std::fs::write(&path, bytes).unwrap();
+    let be = Git2Backend::open(&dir).unwrap();
+    let dag = be.commit_dag(&branch_tips(&be)).unwrap();
+    assert_eq!((dag.stats.from_commit_graph, dag.stats.parsed), (0, 500));
+    assert_eq!(dag_map(&dag), git_dag(&dir, &["--branches"]));
+}
+
+#[test]
+fn commit_dag_shallow_clone_ignores_graph_and_stops_at_boundary() {
+    let (_tmp, dir) = synthetic(300, true);
+    let tmp2 = tempfile::tempdir().unwrap();
+    let url = format!("file://{}", dir.display());
+    let clone = tmp2.path().join("c");
+    git(
+        tmp2.path(),
+        &[
+            "clone",
+            "-q",
+            "--depth",
+            "10",
+            &url,
+            clone.to_str().unwrap(),
+        ],
+    );
+    git(&clone, &["commit-graph", "write", "--reachable"]);
+    let be = Git2Backend::open(&clone).unwrap();
+    assert!(be.repo_info().unwrap().is_shallow);
+    let head = be.repo_info().unwrap().head.unwrap();
+    let dag = be.commit_dag(&[head]).unwrap();
+    assert_eq!(dag.stats.from_commit_graph, 0);
+    let expected = git_dag(&clone, &["HEAD"]);
+    assert_eq!(dag.len(), expected.len());
+    // Boundary commits have their (missing) parents dropped.
+    for (oid, parents) in dag_map(&dag) {
+        assert!(parents.iter().all(|p| expected.contains_key(p)), "{oid}");
+    }
+}
+
+#[test]
+fn commit_dag_rejects_non_commit_tip() {
+    let (tmp, _repo, be) = small();
+    let tree = oid(&git(tmp.path(), &["rev-parse", "HEAD^{tree}"]));
+    assert!(matches!(
+        be.commit_dag(&[tree]),
+        Err(Error::InvalidInput(_))
+    ));
+    assert!(be.commit_dag(&[]).unwrap().is_empty());
+}
+
+#[test]
+fn commit_metas_in_order() {
+    let (_tmp, repo, be) = small();
+    let want = [
+        oid(&repo.commits[2]),
+        oid(&repo.head),
+        oid(&repo.commits[0]),
+    ];
+    let metas = be.commit_metas(&want).unwrap();
+    assert_eq!(metas.iter().map(|m| m.oid).collect::<Vec<_>>(), want);
+    assert_eq!(&*metas[0].summary, "feature: first");
+    assert!(matches!(
+        be.commit_metas(&[Oid([7; 20])]),
+        Err(Error::NotFound(_))
+    ));
+}

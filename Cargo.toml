@@ -25,6 +25,7 @@ fgc-fixtures = { path = "crates/fixtures" }
 # libgit2 is vendored so every platform builds the same engine version.
 # No https/ssh features: network ops go through the git CLI (plan §3).
 git2 = { version = "0.21.0", default-features = false, features = ["vendored-libgit2"] }
+memmap2 = "0.9.12"
 thiserror = "2.0.21"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.23", features = ["fmt", "env-filter"] }

@@ -33,8 +33,10 @@ else
 fi
 
 if [ "$commit_graph" = 1 ]; then
+  # The graph engine (M2) reads full history from this file; without it the
+  # client parses every commit (and writes the file itself in the background).
   echo "writing commit-graph"
-  git -C "$dest" commit-graph write --reachable
+  git -C "$dest" commit-graph write --reachable --split
 fi
 
 echo "commits: $(git -C "$dest" rev-list --count HEAD)"

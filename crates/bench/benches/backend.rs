@@ -11,6 +11,8 @@ use fgc_bench::graph_tips;
 use fgc_core::{DiffSpec, DiffTarget, GitBackend, StatusOpts};
 use fgc_fixtures::{SyntheticSpec, small_repo, synthetic_history, wide_tree};
 use fgc_git_backend::Git2Backend;
+use fgc_graph::{GraphOrder, LayoutBuilder, Topology};
+use std::sync::Arc;
 
 struct Fixtures {
     _tmp: tempfile::TempDir,
@@ -77,6 +79,40 @@ fn bench_walk(c: &mut Criterion, name: &str, repo: &Path) {
     g.finish();
 }
 
+fn bench_graph(c: &mut Criterion, name: &str, repo: &Path) {
+    let be = Git2Backend::open(repo).unwrap();
+    let tips = graph_tips(&be).unwrap();
+    let mut g = c.benchmark_group(format!("graph/{name}"));
+    g.bench_function("commit_dag", |b| b.iter(|| be.commit_dag(&tips).unwrap()));
+    let dag = be.commit_dag(&tips).unwrap();
+    for (label, order) in [
+        ("sort_date", GraphOrder::Date),
+        ("sort_topo", GraphOrder::Topo),
+    ] {
+        g.bench_function(label, |b| {
+            b.iter_batched(
+                || dag.clone(),
+                |d| Topology::from_dag(d, order),
+                BatchSize::LargeInput,
+            )
+        });
+    }
+    let topo = Arc::new(Topology::from_dag(dag, GraphOrder::Date));
+    g.bench_function("layout_full", |b| {
+        b.iter(|| LayoutBuilder::new(topo.clone()).finish())
+    });
+    let layout = LayoutBuilder::new(topo.clone()).finish();
+    let n = layout.rows_laid();
+    g.bench_function("geometry_60_rows_mid", |b| {
+        b.iter(|| layout.rows(n / 2..n / 2 + 60))
+    });
+    let visible: Vec<_> = (0..60).map(|r| topo.oid(r)).collect();
+    g.bench_function("commit_metas_60", |b| {
+        b.iter(|| be.commit_metas(&visible).unwrap())
+    });
+    g.finish();
+}
+
 fn bench_status(c: &mut Criterion, name: &str, repo: &Path) {
     let be = Git2Backend::open(repo).unwrap();
     let opts = StatusOpts::default();
@@ -104,6 +140,7 @@ fn bench_diff(c: &mut Criterion, name: &str, repo: &Path) {
 fn benches(c: &mut Criterion) {
     let fx = fixtures();
     bench_walk(c, "history-30k", &fx.history);
+    bench_graph(c, "history-30k", &fx.history);
     bench_status(c, "small", &fx.small);
     bench_status(c, "wide-20k", &fx.wide);
     bench_diff(c, "small", &fx.small);
@@ -111,6 +148,7 @@ fn benches(c: &mut Criterion) {
     if let Ok(path) = std::env::var("FGC_BENCH_REPO") {
         let path = PathBuf::from(path);
         bench_walk(c, "external", &path);
+        bench_graph(c, "external", &path);
         let be = Git2Backend::open(&path).unwrap();
         if !be.repo_info().unwrap().is_bare {
             bench_status(c, "external", &path);

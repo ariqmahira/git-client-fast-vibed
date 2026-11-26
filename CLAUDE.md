@@ -9,10 +9,11 @@ The full plan is in `docs/PLAN.md`. Read §1 (budgets), §5 (architecture) and �
 - Prefer `-z` / porcelain v2 output when spawning git. Spawn git only for network ops and edge cases, never on interactive paths.
 - Add a `tracing` span around every backend call.
 - A milestone is done when its budgets are gated in `budgets.toml` and pass in CI.
+- Graph rows the UI shows come from `GraphSnapshot`s published by `fgc_graph::GraphEngine`; the UI never sorts or lays out commits itself.
 
 ## Commands
 - `cargo test --workspace` · `cargo clippy --workspace --all-targets -- -D warnings` · `cargo fmt --all`
 - `cargo run --release -p fgc-fixtures -- bench-repos` generates small / history-200k / wide-100k (`huge-1m3` on request).
-- `scripts/fetch-bench-repos.sh` clones linux.git (bare, blob-less) into `bench-repos/`.
+- `scripts/fetch-bench-repos.sh --commit-graph` clones linux.git (bare, blob-less) into `bench-repos/` and writes its commit-graph.
 - `cargo run --release -p fgc-bench --bin fgc-probe -- <repo> [--budgets budgets.toml --profile <name>] [--trace]`
 - `cargo bench -p fgc-bench --bench backend` (set `FGC_BENCH_REPO` to add a real repo).

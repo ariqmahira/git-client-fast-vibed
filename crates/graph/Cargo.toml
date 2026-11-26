@@ -1,6 +1,6 @@
 [package]
 name = "fgc-graph"
-description = "Incremental commit-graph lane layout (milestone M2)"
+description = "Commit-graph ordering, incremental lane layout and the background graph engine"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,3 +9,9 @@ publish.workspace = true
 
 [dependencies]
 fgc-core.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+fgc-git-backend.workspace = true
+fgc-fixtures.workspace = true
+tempfile.workspace = true

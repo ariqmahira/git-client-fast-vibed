@@ -36,4 +36,7 @@ pub struct RepoInfo {
     /// Branch HEAD points at; `None` when detached.
     pub head_branch: Option<Box<str>>,
     pub is_shallow: bool,
+    /// A commit-graph file (or chain) exists, so the full topology can be
+    /// read without parsing commits.
+    pub has_commit_graph: bool,
 }

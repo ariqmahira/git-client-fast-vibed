@@ -1,7 +1,8 @@
 use std::ops::Range;
 
 use crate::{
-    CommitMeta, Diff, DiffSpec, Oid, RefInfo, RepoInfo, Result, StatusOpts, StatusSnapshot,
+    CommitDag, CommitMeta, Diff, DiffSpec, Oid, RefInfo, RepoInfo, Result, StatusOpts,
+    StatusSnapshot,
 };
 
 /// One Git engine, or a router over several.
@@ -30,6 +31,21 @@ pub trait GitBackend: Send + Sync {
     /// Implementations should make sequential paging (`0..500`, `500..1000`,
     /// ...) cost proportional to the page, not to the offset.
     fn walk_commits(&self, tips: &[Oid], range: Range<usize>) -> Result<Vec<CommitMeta>>;
+
+    /// Metadata for specific commits (the visible rows of the graph), in the
+    /// order given.
+    fn commit_metas(&self, oids: &[Oid]) -> Result<Vec<CommitMeta>>;
+
+    /// The complete DAG reachable from `tips`. Must be fast enough to run on
+    /// open for huge repos when a commit-graph file exists (linux.git:
+    /// well under a second); without one it may take seconds, so callers
+    /// show a provisional graph and call [`GitBackend::write_commit_graph`].
+    fn commit_dag(&self, tips: &[Oid]) -> Result<CommitDag>;
+
+    /// Writes/updates Git's commit-graph file (`git commit-graph write
+    /// --reachable --split`). Background maintenance; may take tens of
+    /// seconds on huge repos the first time.
+    fn write_commit_graph(&self) -> Result<()>;
 
     /// Working-tree status.
     fn status(&self, opts: &StatusOpts) -> Result<StatusSnapshot>;

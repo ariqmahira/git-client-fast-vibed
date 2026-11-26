@@ -86,7 +86,7 @@ jobs:
           path: bench-repos/linux.git
           key: linux-git-${{ github.run_id }}
           restore-keys: linux-git-
-      - run: scripts/fetch-bench-repos.sh
+      - run: scripts/fetch-bench-repos.sh --commit-graph
       - name: Probe budgets
         run: |
           mkdir -p probe-reports
