@@ -6,7 +6,7 @@ fgc is an early build of a fast git client. It covers browsing, the working tree
 
 ## Get it
 
-**Prebuilt:** open the latest CI run of this branch (GitHub → Actions → CI), and download `fgc-linux-x86_64`, `fgc-macos-arm64` or `fgc-windows-x86_64` from the run's artifacts. On macOS/Linux: `chmod +x fgc`. The macOS binary is unsigned; right-click → Open the first time.
+**Prebuilt:** download the archive for your platform from the repository's **Releases** page (GitHub → Releases): `fgc-linux-x86_64.tar.gz`, `fgc-macos-arm64.tar.gz` or `fgc-windows-x86_64.zip`, and unpack it. The macOS binary is unsigned; right-click → Open the first time.
 
 **From source** (Rust stable):
 

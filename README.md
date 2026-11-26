@@ -16,7 +16,7 @@ A GitKraken replacement that **is** fast and **feels** fast: Rust core, libgit2 
 | M7 gix experiments | Not started |
 | M8 MVP polish | Not started (see [TESTING.md](TESTING.md) for what's missing) |
 
-**Trying it out:** see [TESTING.md](TESTING.md).
+**Trying it out:** download a build from the Releases page and see [TESTING.md](TESTING.md). Releases are built by `.github/workflows/release.yml` when a `v*` tag is pushed.
 
 ## Layout
 

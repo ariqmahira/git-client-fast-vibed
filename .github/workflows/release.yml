@@ -1,0 +1,90 @@
+name: Release
+
+# Builds fgc for Linux, macOS and Windows and attaches the binaries to a
+# GitHub Release. Triggered by pushing a version tag, e.g.:
+#   git tag v0.1.0-preview.1 && git push origin v0.1.0-preview.1
+# Tags with a hyphen (v0.1.0-preview.1) are published as pre-releases.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # Release binaries for users: no debug info (CI/dev builds keep line
+  # tables for profiling) and stripped symbols. ~23 MB instead of ~217 MB.
+  CARGO_PROFILE_RELEASE_DEBUG: "0"
+  CARGO_PROFILE_RELEASE_STRIP: "true"
+
+jobs:
+  build:
+    name: build (${{ matrix.name }})
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { os: ubuntu-latest, name: linux-x86_64 }
+          - { os: macos-latest, name: macos-arm64 }
+          - { os: windows-latest, name: windows-x86_64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux system packages for GPUI
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libx11-xcb-dev
+      - run: cargo build --release -p fgc-ui
+      - name: Package (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p dist/fgc-${{ matrix.name }}
+          cp target/release/fgc TESTING.md dist/fgc-${{ matrix.name }}/
+          tar -C dist -czf fgc-${{ matrix.name }}.tar.gz fgc-${{ matrix.name }}
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/fgc-${{ matrix.name }} | Out-Null
+          Copy-Item target/release/fgc.exe, TESTING.md dist/fgc-${{ matrix.name }}/
+          Compress-Archive -Path dist/fgc-${{ matrix.name }} -DestinationPath fgc-${{ matrix.name }}.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fgc-${{ matrix.name }}
+          path: fgc-${{ matrix.name }}.*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ls -la assets
+          cat > notes.md <<EOF
+          Preview build of fgc, a fast git client. See TESTING.md (also inside each archive) for setup, what to try and known gaps.
+
+          | Platform | File |
+          |---|---|
+          | Linux x86_64 | \`fgc-linux-x86_64.tar.gz\` (needs a Vulkan driver) |
+          | macOS Apple silicon | \`fgc-macos-arm64.tar.gz\` (unsigned: right-click → Open the first time) |
+          | Windows x86_64 | \`fgc-windows-x86_64.zip\` |
+
+          \`git\` must be on your PATH. fgc runs real git operations on the repository you open; try it on a clone first.
+          EOF
+          prerelease=""
+          if [[ "$TAG" == *-* ]]; then prerelease="--prerelease"; fi
+          gh release create "$TAG" assets/* --title "fgc $TAG" --notes-file notes.md --verify-tag $prerelease
