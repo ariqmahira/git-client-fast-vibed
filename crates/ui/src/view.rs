@@ -4,6 +4,8 @@
 //! immutable snapshots it receives and sends commands. Every list is
 //! virtualized (`uniform_list`): per frame we touch only visible rows.
 
+mod write_ui;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::Range;
 use std::path::PathBuf;
@@ -14,10 +16,13 @@ use fgc_actor::{ActorOptions, Command, Event, GraphSnapshot, Phase, RepoActor};
 use fgc_core::{CommitMeta, LineKind, Oid, RefInfo, RefKind, RepoInfo, StatusSnapshot};
 use futures::StreamExt;
 use gpui::{
-    AnyElement, App, Context, FocusHandle, Focusable, FontWeight, InteractiveElement, IntoElement,
-    ParentElement, Render, ScrollStrategy, SharedString, Styled, UniformListScrollHandle, Window,
-    actions, canvas, div, prelude::*, px, uniform_list,
+    AnyElement, App, Context, Entity, FocusHandle, Focusable, FontWeight, InteractiveElement,
+    IntoElement, ParentElement, Render, ScrollStrategy, SharedString, Styled,
+    UniformListScrollHandle, Window, actions, canvas, div, prelude::*, px, uniform_list,
 };
+
+use crate::text_input::TextInput;
+use write_ui::{Pending, RunningOps, Toast, button};
 
 use crate::bench::Bench;
 use crate::diff_doc::{DiffDoc, Row, change_letter};
@@ -39,6 +44,11 @@ actions!(
         NextFile,
         PrevFile,
         ToggleDebugOverlay,
+        Commit,
+        OpenRepository,
+        Fetch,
+        Pull,
+        Push,
         Quit
     ]
 );
@@ -95,6 +105,23 @@ pub struct RepoView {
     timings: VecDeque<(&'static str, Duration, String)>,
     errors: VecDeque<String>,
     pub(crate) bench: Option<Bench>,
+
+    // Write path (M4) and network (M6), see write_ui.rs.
+    commit_input: Entity<TextInput>,
+    branch_input: Entity<TextInput>,
+    branch_input_open: bool,
+    amend: bool,
+    /// Fill the commit box with HEAD's message once its metadata arrives.
+    prefill_amend: bool,
+    /// A commit succeeded: clear the box on the next update.
+    commit_clear: bool,
+    /// Files with an in-flight stage/unstage (drawn dimmed).
+    pending_paths: HashSet<PathBuf>,
+    pending_ops: HashMap<u64, Pending>,
+    running: RunningOps,
+    toast: Option<Toast>,
+    confirm_delete: Option<String>,
+    force_delete: Option<String>,
 }
 
 impl RepoView {
@@ -120,7 +147,7 @@ impl RepoView {
                 }
                 let alive = this.update(cx, |view, cx| {
                     for ev in batch {
-                        view.apply(ev);
+                        view.apply(ev, cx);
                     }
                     cx.notify();
                 });
@@ -140,7 +167,24 @@ impl RepoView {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| repo.display().to_string());
 
+        let commit_input =
+            cx.new(|cx| TextInput::new(cx, "Commit message (first line is the summary)", true));
+        let branch_input = cx.new(|cx| TextInput::new(cx, "new-branch-name", false));
+        Self::subscribe_inputs(&commit_input, &branch_input, window, cx);
+
         let view = RepoView {
+            commit_input,
+            branch_input,
+            branch_input_open: false,
+            amend: false,
+            prefill_amend: false,
+            commit_clear: false,
+            pending_paths: HashSet::new(),
+            pending_ops: HashMap::new(),
+            running: RunningOps::new(),
+            toast: None,
+            confirm_delete: None,
+            force_delete: None,
             actor,
             repo_name: repo_name.into(),
             focus,
@@ -186,7 +230,15 @@ impl RepoView {
         }
     }
 
-    fn apply(&mut self, ev: Event) {
+    fn apply(&mut self, ev: Event, cx: &mut Context<Self>) {
+        if std::env::var_os("FGC_DEBUG_EVENTS").is_some() {
+            let name = format!("{ev:?}");
+            eprintln!(
+                "event at {:?}: {}",
+                self.perf.borrow().process_start.elapsed(),
+                &name[..name.len().min(80)]
+            );
+        }
         match ev {
             Event::RepoInfo(info) => self.info = Some(info),
             Event::Refs(refs) => {
@@ -232,13 +284,45 @@ impl RepoView {
                     self.metas_in_flight.remove(&m.oid);
                     self.metas.insert(m.oid, m);
                 }
+                if self.prefill_amend {
+                    let head = self.info.as_ref().and_then(|i| i.head);
+                    if let Some(m) = head.and_then(|h| self.metas.get(&h)) {
+                        let summary = m.summary.to_string();
+                        self.prefill_amend = false;
+                        if self.amend && self.commit_input.read(cx).text().trim().is_empty() {
+                            self.commit_input
+                                .update(cx, |i, cx| i.set_text(summary, cx));
+                        }
+                    }
+                }
             }
             Event::CommitDiff { oid, diff } => {
                 if self.selection == Some(Selection::Commit(oid)) {
                     self.set_doc(DiffDoc::new(vec![("Commit", diff)]), Selection::Commit(oid));
                 }
             }
-            Event::Status(st) => self.status = Some(st),
+            Event::Status(st) => {
+                self.status = Some(st);
+                // Keep the working-tree diff in step with status changes
+                // (our own writes, the watcher, a terminal).
+                if self.selection == Some(Selection::WorkingTree) {
+                    self.actor.send(Command::WorkdirDiff(None));
+                }
+            }
+            Event::OpStarted { id, label, command } => self.apply_op_started(id, label, command),
+            Event::OpProgress { id, line } => self.apply_op_progress(id, line),
+            Event::OpFinished {
+                id,
+                label,
+                command,
+                result,
+            } => {
+                self.apply_op_finished(id, label, command, result);
+                if self.commit_clear {
+                    self.commit_clear = false;
+                    self.commit_input.update(cx, |i, cx| i.set_text("", cx));
+                }
+            }
             Event::WorkdirDiff {
                 staged, unstaged, ..
             } => {
@@ -276,14 +360,24 @@ impl RepoView {
                 perf.diff_ready = true;
             }
         }
+        // Same selection refreshed (e.g. after staging a hunk): keep the
+        // user's place. New selection: start at the top.
+        let same = self.doc_for.as_ref() == Some(&for_);
         self.doc = doc;
         self.doc_for = Some(for_);
         self.diff_error = None;
-        self.selected_file = None;
-        self.diff_scroll
-            .scroll_to_item_strict(0, ScrollStrategy::Top);
-        self.files_scroll
-            .scroll_to_item_strict(0, ScrollStrategy::Top);
+        if !same {
+            self.selected_file = None;
+            self.diff_scroll
+                .scroll_to_item_strict(0, ScrollStrategy::Top);
+            self.files_scroll
+                .scroll_to_item_strict(0, ScrollStrategy::Top);
+        } else if self
+            .selected_file
+            .is_some_and(|f| f >= self.doc.files.len())
+        {
+            self.selected_file = None;
+        }
     }
 
     /// Rows that can be drawn right now (provisional/partial snapshots
@@ -427,8 +521,9 @@ impl RepoView {
                     .pr_2()
                     .when(selected, |d| d.bg(theme::selection()))
                     .when(!selected, |d| d.hover(|s| s.bg(theme::hover())))
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                    .on_click(cx.listener(move |this, _, window, cx| {
                         this.input();
+                        window.focus(&this.focus);
                         this.select_row(row);
                         cx.notify();
                     }))
@@ -486,10 +581,13 @@ impl RepoView {
                     .unwrap_or_default();
                 let section = self.doc.sections[entry.diff].0;
                 let selected = self.selected_file == Some(i);
+                let working_tree = self.selection == Some(Selection::WorkingTree);
+                let pending = f.path().is_some_and(|p| self.pending_paths.contains(p));
                 Some(
                     div()
                         .id(i)
                         .h(px(FILE_ROW_H))
+                        .when(pending, |d| d.opacity(0.45))
                         .w_full()
                         .flex()
                         .flex_row()
@@ -535,13 +633,30 @@ impl RepoView {
                                 .text_color(theme::del_fg())
                                 .child(format!("-{}", f.deletions)),
                         )
+                        .when(working_tree, |d| {
+                            let staged = section == "Staged";
+                            d.child(
+                                button(
+                                    SharedString::from(format!("toggle-{i}")),
+                                    if staged { "Unstage" } else { "Stage" },
+                                    !pending,
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.toggle_file(i);
+                                        cx.notify();
+                                    },
+                                )),
+                            )
+                        })
                         .into_any_element(),
                 )
             })
             .collect()
     }
 
-    fn render_diff_rows(&mut self, range: Range<usize>) -> Vec<AnyElement> {
+    fn render_diff_rows(&mut self, range: Range<usize>, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let working_tree = self.selection == Some(Selection::WorkingTree);
         range
             .filter_map(|i| {
                 let row = *self.doc.rows.get(i)?;
@@ -584,10 +699,41 @@ impl RepoView {
                                 )
                                 .child(div().flex_1().min_w_0().truncate().child(path))
                         }
-                        Row::Hunk { diff, hunk } => base
-                            .px_2()
-                            .text_color(theme::hunk_fg())
-                            .child(self.doc.diff(diff).hunks[hunk as usize].header.to_string()),
+                        Row::Hunk { diff, hunk } => {
+                            let staged = self.doc.sections[diff].0 == "Staged";
+                            base.px_2()
+                                .gap_2()
+                                .text_color(theme::hunk_fg())
+                                .child(div().flex_1().min_w_0().truncate().child(
+                                    self.doc.diff(diff).hunks[hunk as usize].header.to_string(),
+                                ))
+                                .when(working_tree, |d| {
+                                    d.child(
+                                        div()
+                                            .id(SharedString::from(format!("hunk-{diff}-{hunk}")))
+                                            .flex_shrink_0()
+                                            .px_1p5()
+                                            .rounded(px(3.))
+                                            .font_family(theme::UI_FONT)
+                                            .text_size(px(11.))
+                                            .text_color(theme::text())
+                                            .bg(theme::panel())
+                                            .border_1()
+                                            .border_color(theme::border())
+                                            .cursor_pointer()
+                                            .hover(|s| s.bg(theme::hover()))
+                                            .child(if staged {
+                                                "Unstage hunk"
+                                            } else {
+                                                "Stage hunk"
+                                            })
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.toggle_hunk(diff, hunk);
+                                                cx.notify();
+                                            })),
+                                    )
+                                })
+                        }
                         Row::Binary { .. } => base
                             .px_2()
                             .text_color(theme::muted())
@@ -675,6 +821,7 @@ impl RepoView {
             .child(div().text_color(theme::muted()).child(branch))
             .child(div().text_color(theme::muted()).child(graph))
             .child(div().flex_1())
+            .child(self.render_toolbar(cx))
             .child(
                 div()
                     .id("wt")
@@ -693,15 +840,12 @@ impl RepoView {
                     }))
                     .child(format!("Working tree · {changes}")),
             )
-            .child(
-                div()
-                    .text_color(theme::muted())
-                    .text_size(px(11.))
-                    .child("ctrl-shift-d: debug"),
-            )
     }
 
-    fn render_details(&self) -> impl IntoElement {
+    fn render_details(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.selection == Some(Selection::WorkingTree) {
+            return self.render_commit_box(cx);
+        }
         let body: AnyElement = match &self.selection {
             Some(Selection::Commit(oid)) => match self.metas.get(oid) {
                 Some(m) => div()
@@ -735,6 +879,7 @@ impl RepoView {
                                     .join(" ")
                             )),
                     )
+                    .child(self.render_branch_actions(*oid, cx))
                     .into_any_element(),
                 None => div()
                     .text_color(theme::muted())
@@ -756,6 +901,7 @@ impl RepoView {
             .border_b_1()
             .border_color(theme::border())
             .child(body)
+            .into_any_element()
     }
 
     fn render_overlay(&self) -> impl IntoElement {
@@ -917,6 +1063,20 @@ impl Render for RepoView {
                 }
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &Commit, _, cx| this.do_commit(cx)))
+            .on_action(cx.listener(|this, _: &OpenRepository, _, cx| this.open_repository(cx)))
+            .on_action(cx.listener(|this, _: &Fetch, _, cx| {
+                this.network(fgc_core::NetworkOp::Fetch);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &Pull, _, cx| {
+                this.network(fgc_core::NetworkOp::Pull { rebase: false });
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &Push, _, cx| {
+                this.network(fgc_core::NetworkOp::Push);
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, _: &ToggleDebugOverlay, _, cx| {
                 this.input();
                 this.overlay = !this.overlay;
@@ -966,7 +1126,7 @@ impl Render for RepoView {
                             .bg(theme::panel())
                             .border_l_1()
                             .border_color(theme::border())
-                            .child(self.render_details())
+                            .child(self.render_details(cx))
                             .child(
                                 uniform_list(
                                     "files",
@@ -1006,13 +1166,16 @@ impl Render for RepoView {
                                 uniform_list(
                                     "diff",
                                     self.doc.rows.len(),
-                                    cx.processor(|this, range, _, _| this.render_diff_rows(range)),
+                                    cx.processor(|this, range, _, cx| {
+                                        this.render_diff_rows(range, cx)
+                                    }),
                                 )
                                 .track_scroll(self.diff_scroll.clone())
                                 .flex_1(),
                             ),
                     ),
             )
+            .child(self.render_status_bar())
             .when(self.overlay, |d| d.child(self.render_overlay()))
             // Painted last: marks the end of the frame for the recorder.
             .child(

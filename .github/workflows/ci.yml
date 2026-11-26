@@ -72,12 +72,38 @@ jobs:
           $P bench-repos/small --budgets budgets.toml --profile small --json probe-reports/small.json
           $P bench-repos/history-200k --budgets budgets.toml --profile history-200k --json probe-reports/history-200k.json
           $P bench-repos/wide-100k --iters 5 --status-path pkg0050/file0500.txt \
+             --watch-path pkg0050/file0500.txt --no-graph \
              --budgets budgets.toml --profile wide-100k --json probe-reports/wide-100k.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: probe-reports-synthetic
           path: probe-reports
+
+  release-build:
+    name: build fgc (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, name: linux-x86_64, bin: fgc }
+          - { os: macos-latest, name: macos-arm64, bin: fgc }
+          - { os: windows-latest, name: windows-x86_64, bin: fgc.exe }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux system packages for GPUI
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libx11-xcb-dev
+      - run: cargo build --release -p fgc-ui
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fgc-${{ matrix.name }}
+          path: target/release/${{ matrix.bin }}
 
   ui:
     name: UI budgets (headless GPUI)

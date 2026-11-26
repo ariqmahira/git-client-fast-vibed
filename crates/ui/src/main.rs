@@ -11,22 +11,16 @@ use std::time::Instant;
 use clap::Parser;
 
 use fgc_actor::{ActorOptions, EngineOptions, GraphOrder};
+use fgc_ui::app::{WindowConfig, bind_keys, open_repo_window, open_welcome_window};
 use fgc_ui::bench::{Bench, BenchOptions, EXIT_CODE};
-use fgc_ui::perf::Perf;
-use fgc_ui::view::{
-    NextFile, PageDown, PageUp, PrevFile, Quit, RepoView, SelectFirst, SelectLast, SelectNext,
-    SelectPrev, ShowWorkingTree, ToggleDebugOverlay,
-};
-use gpui::{
-    App, Application, Bounds, KeyBinding, WindowBounds, WindowOptions, prelude::*, px, size,
-};
+use gpui::{App, Application};
 
 #[derive(Parser)]
 #[command(about = "A fast git client")]
 struct Args {
-    /// Repository to open (any path inside it).
-    #[arg(default_value = ".")]
-    repo: PathBuf,
+    /// Repository to open (any path inside it). Without one, the current
+    /// directory is used if it's a repository, else a welcome window opens.
+    repo: Option<PathBuf>,
     /// Commit graph row order.
     #[arg(long, value_enum, default_value_t = Order::Date)]
     order: Order,
@@ -59,11 +53,23 @@ fn main() {
     let process_start = Instant::now();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     let args = Args::parse();
-    if let Err(e) = fgc_git_backend_check(&args.repo) {
-        eprintln!("fgc: {e}");
+    // An explicit path must be a repository; the implicit "." may not be.
+    let repo = match &args.repo {
+        Some(p) => {
+            if let Err(e) = fgc_git_backend::Git2Backend::open(p) {
+                eprintln!("fgc: {e}");
+                std::process::exit(2);
+            }
+            Some(p.clone())
+        }
+        None => fgc_git_backend::Git2Backend::open(".")
+            .ok()
+            .map(|_| PathBuf::from(".")),
+    };
+    if args.bench && repo.is_none() {
+        eprintln!("fgc: --bench needs a repository");
         std::process::exit(2);
     }
-    let perf = Perf::new(process_start);
     let bench = args.bench.then(|| {
         Bench::new(BenchOptions {
             frames: args.bench_frames,
@@ -72,7 +78,7 @@ fn main() {
             budgets: args.budgets.clone().zip(args.profile.clone()),
         })
     });
-    let opts = ActorOptions {
+    let actor = ActorOptions {
         graph: EngineOptions {
             order: match args.order {
                 Order::Date => GraphOrder::Date,
@@ -80,54 +86,29 @@ fn main() {
             },
             ..Default::default()
         },
+        // The benchmark measures rendering; keep the watcher out of it.
+        watch: !args.bench,
         ..Default::default()
     };
-    let repo = args.repo.clone();
 
     Application::new().run(move |cx: &mut App| {
-        cx.bind_keys([
-            KeyBinding::new("down", SelectNext, Some("RepoView")),
-            KeyBinding::new("j", SelectNext, Some("RepoView")),
-            KeyBinding::new("up", SelectPrev, Some("RepoView")),
-            KeyBinding::new("k", SelectPrev, Some("RepoView")),
-            KeyBinding::new("pagedown", PageDown, Some("RepoView")),
-            KeyBinding::new("pageup", PageUp, Some("RepoView")),
-            KeyBinding::new("home", SelectFirst, Some("RepoView")),
-            KeyBinding::new("end", SelectLast, Some("RepoView")),
-            KeyBinding::new("w", ShowWorkingTree, Some("RepoView")),
-            KeyBinding::new("]", NextFile, Some("RepoView")),
-            KeyBinding::new("[", PrevFile, Some("RepoView")),
-            KeyBinding::new("ctrl-shift-d", ToggleDebugOverlay, Some("RepoView")),
-            KeyBinding::new("cmd-shift-d", ToggleDebugOverlay, Some("RepoView")),
-            KeyBinding::new("ctrl-q", Quit, None),
-            KeyBinding::new("cmd-q", Quit, None),
-        ]);
-        cx.on_action(|_: &Quit, cx| cx.quit());
-
-        let bounds = Bounds::centered(None, size(px(1440.), px(900.)), cx);
-        let result = cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                ..Default::default()
-            },
-            move |window, cx| {
-                cx.new(|cx| {
-                    RepoView::new(repo, opts, perf, bench, window, cx)
-                        .expect("repository was checked before opening the window")
-                })
-            },
-        );
-        if let Err(e) = result {
-            eprintln!("fgc: cannot open window: {e}");
-            EXIT_CODE.store(2, Ordering::SeqCst);
-            cx.quit();
+        bind_keys(cx);
+        match repo {
+            Some(path) => {
+                let config = WindowConfig {
+                    actor,
+                    bench,
+                    process_start: Some(process_start),
+                };
+                if let Err(e) = open_repo_window(path, config, cx) {
+                    eprintln!("fgc: {e}");
+                    EXIT_CODE.store(2, Ordering::SeqCst);
+                    cx.quit();
+                }
+            }
+            None => open_welcome_window(cx),
         }
         cx.activate(true);
     });
     std::process::exit(EXIT_CODE.load(Ordering::SeqCst));
-}
-
-/// Fails fast (before creating a window) if the path isn't a repository.
-fn fgc_git_backend_check(path: &std::path::Path) -> fgc_core::Result<()> {
-    fgc_git_backend::Git2Backend::open(path).map(|_| ())
 }

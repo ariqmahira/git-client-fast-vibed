@@ -10,6 +10,9 @@ The full plan is in `docs/PLAN.md`. Read §1 (budgets), §5 (architecture) and �
 - Add a `tracing` span around every backend call.
 - A milestone is done when its budgets are gated in `budgets.toml` and pass in CI.
 - Graph rows the UI shows come from `GraphSnapshot`s published by `fgc_graph::GraphEngine`; the UI never sorts or lays out commits itself.
+- Write operations go through `Command::Write(WriteOp)` (one writer thread, in order); network through `Command::Network` (git CLI). Every `WriteOp` has a label and an equivalent git command (`crates/actor/src/ops.rs`).
+- Commits use the git CLI when hooks or signing are configured (parity); libgit2 otherwise. Tests set a repo-local identity and must not depend on `~/.gitconfig`.
+- User-facing error messages are complete sentences; `Error::InvalidInput`/`Engine` display without a prefix.
 
 ## Commands
 - `cargo test --workspace` · `cargo clippy --workspace --all-targets -- -D warnings` · `cargo fmt --all`
@@ -23,4 +26,5 @@ The full plan is in `docs/PLAN.md`. Read §1 (budgets), §5 (architecture) and �
 - GPUI is pinned to `=0.2.2`. `third_party/xattr-0.2.3` patches a transitive dependency that doesn't build with current libc.
 - Every list is a `uniform_list`. Row processors can run more than once per frame, so per-frame state is rotated at the start of `RepoView::render`.
 - Keep per-frame work bounded: geometry via `Layout::rows_clipped`, text revealed at most `TEXT_REVEAL_PER_FRAME` rows per frame, metadata requested in batches around the viewport.
-- After a UI change, look at it: take a screenshot under Xvfb (`import -window root`), don't rely on the benchmark alone.
+- After a UI change, look at it: take a screenshot under Xvfb (`import -window root`), drive it with `xdotool`, and check the repository with `git`; don't rely on the benchmark alone.
+- Navigation keys are bound in `RepoView && !TextInput` so they don't fire while typing. `FGC_DEBUG_EVENTS=1` logs actor events with timestamps.

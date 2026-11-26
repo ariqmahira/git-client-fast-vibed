@@ -12,6 +12,7 @@ fgc-core.workspace = true
 fgc-graph.workspace = true
 fgc-git-backend.workspace = true
 tracing.workspace = true
+notify = "8.2"
 
 [target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
 libc = "0.2"

@@ -1,8 +1,8 @@
 use std::ops::Range;
 
 use crate::{
-    CommitDag, CommitMeta, Diff, DiffSpec, Oid, RefInfo, RepoInfo, Result, StatusOpts,
-    StatusSnapshot,
+    CommitDag, CommitMeta, Diff, DiffSpec, Error, HunkSel, NetworkOp, Oid, RefInfo, RepoInfo,
+    Result, StatusOpts, StatusSnapshot,
 };
 
 /// One Git engine, or a router over several.
@@ -15,8 +15,9 @@ use crate::{
 /// Each method returns owned, immutable data so results can be published to
 /// the UI as `Arc` snapshots without locking.
 ///
-/// Write operations (stage, commit, branch, stash) arrive in M4 and network
-/// operations (fetch/push via the git CLI) in M6.
+/// Write operations default to [`Error::Unsupported`] so read-only engines
+/// and test doubles needn't implement them. Callers must serialize writes
+/// (the repo actor runs them on a single writer thread).
 pub trait GitBackend: Send + Sync {
     /// Basic facts about the repository (HEAD, bare, workdir).
     fn repo_info(&self) -> Result<RepoInfo>;
@@ -52,4 +53,65 @@ pub trait GitBackend: Send + Sync {
 
     /// A flattened diff.
     fn diff(&self, spec: &DiffSpec) -> Result<Diff>;
+
+    // ---- write path (M4) ----
+
+    /// `git add -- <paths>`: stages content, deletions and conflict resolutions.
+    fn stage(&self, _paths: &[std::path::PathBuf]) -> Result<()> {
+        Err(Error::Unsupported("stage".into()))
+    }
+
+    /// `git restore --staged -- <paths>`.
+    fn unstage(&self, _paths: &[std::path::PathBuf]) -> Result<()> {
+        Err(Error::Unsupported("unstage".into()))
+    }
+
+    /// Stages one hunk of the unstaged diff of `path`.
+    fn stage_hunk(&self, _path: &std::path::Path, _hunk: HunkSel) -> Result<()> {
+        Err(Error::Unsupported("stage_hunk".into()))
+    }
+
+    /// Unstages one hunk of the staged diff of `path`.
+    fn unstage_hunk(&self, _path: &std::path::Path, _hunk: HunkSel) -> Result<()> {
+        Err(Error::Unsupported("unstage_hunk".into()))
+    }
+
+    /// Commits the index (or amends HEAD). Returns the new commit.
+    fn commit(&self, _message: &str, _amend: bool) -> Result<Oid> {
+        Err(Error::Unsupported("commit".into()))
+    }
+
+    /// Creates a local branch at `at`, optionally checking it out.
+    fn create_branch(&self, _name: &str, _at: Oid, _checkout: bool) -> Result<()> {
+        Err(Error::Unsupported("create_branch".into()))
+    }
+
+    /// Checks out a local branch, or creates a tracking branch for a remote
+    /// one (`origin/x` → `x`). Refuses to overwrite local changes.
+    fn checkout_branch(&self, _name: &str) -> Result<()> {
+        Err(Error::Unsupported("checkout_branch".into()))
+    }
+
+    /// Deletes a local branch. Without `force`, refuses unmerged branches.
+    fn delete_branch(&self, _name: &str, _force: bool) -> Result<()> {
+        Err(Error::Unsupported("delete_branch".into()))
+    }
+
+    /// `git stash push --include-untracked [-m message]`.
+    fn stash_push(&self, _message: Option<&str>) -> Result<()> {
+        Err(Error::Unsupported("stash_push".into()))
+    }
+
+    /// `git stash pop`.
+    fn stash_pop(&self) -> Result<()> {
+        Err(Error::Unsupported("stash_pop".into()))
+    }
+
+    // ---- network (M6) ----
+
+    /// Runs a network operation, streaming git's progress lines to
+    /// `progress`. Returns the command that ran.
+    fn network(&self, _op: NetworkOp, _progress: &dyn Fn(&str)) -> Result<String> {
+        Err(Error::Unsupported("network".into()))
+    }
 }

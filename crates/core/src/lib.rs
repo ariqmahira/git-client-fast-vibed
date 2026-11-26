@@ -17,6 +17,7 @@ pub mod oid;
 pub mod perf;
 pub mod refs;
 pub mod status;
+pub mod write;
 
 pub use backend::GitBackend;
 pub use commit::CommitMeta;
@@ -26,3 +27,4 @@ pub use error::{Error, Result};
 pub use oid::Oid;
 pub use refs::{RefInfo, RefKind, RepoInfo};
 pub use status::{Change, StatusEntry, StatusOpts, StatusSnapshot};
+pub use write::{HunkSel, NetworkOp};

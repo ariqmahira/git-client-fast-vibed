@@ -8,11 +8,11 @@ pub enum Error {
     NotARepo(PathBuf),
     #[error("object not found: {0}")]
     NotFound(String),
-    #[error("invalid input: {0}")]
+    #[error("{0}")]
     InvalidInput(String),
     #[error("operation not supported by this repository: {0}")]
     Unsupported(String),
-    #[error("git engine error: {0}")]
+    #[error("{0}")]
     Engine(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),

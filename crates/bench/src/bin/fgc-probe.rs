@@ -67,6 +67,11 @@ struct Args {
     /// after a save, plan §5). Repeatable.
     #[arg(long = "status-path")]
     status_paths: Vec<PathBuf>,
+    /// Measure save → status update through the file watcher by editing this
+    /// file (relative to the work tree) and restoring it. Modifies the
+    /// repository while it runs: use only on fixture repos.
+    #[arg(long)]
+    watch_path: Option<PathBuf>,
     /// Skip the commit-graph engine measurements.
     #[arg(long)]
     no_graph: bool,
@@ -203,6 +208,10 @@ fn run(args: &Args) -> Result<ExitCode> {
 
     if !args.no_graph && !tips.is_empty() {
         graph_measurements(args, &tips, &mut samples)?;
+    }
+
+    if let (Some(rel), Some(wd)) = (&args.watch_path, &info.workdir) {
+        samples.push(watch_latency(wd, rel, iters)?);
     }
 
     if !info.is_bare {
@@ -553,4 +562,58 @@ fn run_engine_to_completion(args: &Args, order: GraphOrder) -> Result<Arc<GraphS
     }
     let _ = handle.join();
     result.ok_or_else(|| Error::Engine("graph engine finished without a result".into()))
+}
+
+/// M5: save a file → status snapshot reflecting it, through the actor's
+/// file watcher and targeted status.
+fn watch_latency(workdir: &std::path::Path, rel: &std::path::Path, iters: usize) -> Result<Sample> {
+    use fgc_actor::{ActorOptions, Event, RepoActor};
+    let path = workdir.join(rel);
+    let original = std::fs::read(&path)?;
+    let (tx, rx) = mpsc::channel();
+    let actor = RepoActor::open(workdir, ActorOptions::default(), move |ev| {
+        if let Event::Status(s) = ev {
+            let _ = tx.send(s);
+        }
+    })?;
+    // Initial full status.
+    rx.recv_timeout(std::time::Duration::from_secs(60))
+        .map_err(|_| Error::Engine("no initial status".into()))?;
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    while rx.try_recv().is_ok() {}
+
+    let mut runs = Vec::new();
+    let result = (|| {
+        for i in 0..iters.max(1) {
+            let dirty = i % 2 == 0;
+            let t = Instant::now();
+            if dirty {
+                let mut c = original.clone();
+                c.extend_from_slice(b"edited by fgc-probe\n");
+                std::fs::write(&path, c)?;
+            } else {
+                std::fs::write(&path, &original)?;
+            }
+            loop {
+                let s = rx
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .map_err(|_| Error::Engine("watcher did not report the change".into()))?;
+                if s.entries.iter().any(|e| e.path == rel) == dirty {
+                    break;
+                }
+            }
+            runs.push(ms(t.elapsed()));
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            while rx.try_recv().is_ok() {}
+        }
+        Ok::<_, Error>(())
+    })();
+    std::fs::write(&path, &original)?;
+    drop(actor);
+    result?;
+    Ok(sample(
+        "watch_to_status",
+        runs,
+        "save → status snapshot (watcher + targeted status)",
+    ))
 }

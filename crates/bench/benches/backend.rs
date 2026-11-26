@@ -113,6 +113,56 @@ fn bench_graph(c: &mut Criterion, name: &str, repo: &Path) {
     g.finish();
 }
 
+/// Write path (M4) on a disposable copy of the small fixture.
+fn bench_write(c: &mut Criterion) {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    small_repo(d);
+    fgc_fixtures::git(d, &["config", "user.name", "Bench"]);
+    fgc_fixtures::git(d, &["config", "user.email", "bench@example.com"]);
+    // Measure the libgit2 path; signing/hooks route commits through the CLI.
+    fgc_fixtures::git(d, &["config", "commit.gpgsign", "false"]);
+    let be = Git2Backend::open(d).unwrap();
+    let lib = std::path::PathBuf::from("src/lib.rs");
+    let mut g = c.benchmark_group("write/small");
+    g.bench_function("stage_unstage_file", |b| {
+        b.iter(|| {
+            be.stage(std::slice::from_ref(&lib)).unwrap();
+            be.unstage(std::slice::from_ref(&lib)).unwrap();
+        })
+    });
+    let hunk = {
+        let diff = be
+            .diff(
+                &DiffSpec::new(DiffTarget::IndexToWorkdir {
+                    include_untracked: false,
+                })
+                .paths([lib.clone()]),
+            )
+            .unwrap();
+        fgc_core::HunkSel::of(&diff.hunks[0])
+    };
+    g.bench_function("stage_unstage_hunk", |b| {
+        b.iter(|| {
+            be.stage_hunk(&lib, hunk).unwrap();
+            be.unstage_hunk(&lib, hunk).unwrap();
+        })
+    });
+    let mut n = 0u64;
+    g.bench_function("commit", |b| {
+        b.iter_batched(
+            || {
+                n += 1;
+                std::fs::write(d.join("bench.txt"), format!("{n}\n")).unwrap();
+                be.stage(&["bench.txt".into()]).unwrap();
+            },
+            |()| be.commit("bench commit", false).unwrap(),
+            BatchSize::PerIteration,
+        )
+    });
+    g.finish();
+}
+
 fn bench_status(c: &mut Criterion, name: &str, repo: &Path) {
     let be = Git2Backend::open(repo).unwrap();
     let opts = StatusOpts::default();
@@ -144,6 +194,7 @@ fn benches(c: &mut Criterion) {
     bench_status(c, "small", &fx.small);
     bench_status(c, "wide-20k", &fx.wide);
     bench_diff(c, "small", &fx.small);
+    bench_write(c);
 
     if let Ok(path) = std::env::var("FGC_BENCH_REPO") {
         let path = PathBuf::from(path);

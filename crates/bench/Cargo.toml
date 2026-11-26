@@ -11,6 +11,7 @@ publish.workspace = true
 fgc-core.workspace = true
 fgc-git-backend.workspace = true
 fgc-graph.workspace = true
+fgc-actor.workspace = true
 fgc-fixtures.workspace = true
 clap.workspace = true
 serde.workspace = true

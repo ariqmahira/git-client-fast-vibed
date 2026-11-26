@@ -137,3 +137,175 @@ fn workdir_diff_split_into_staged_and_unstaged() {
     assert_eq!(unstaged.files.len(), 1);
     drop(actor);
 }
+
+// ---- M4/M5: writes and live updates ----
+
+use fgc_actor::WriteOp;
+use fgc_core::NetworkOp;
+use std::path::Path;
+
+fn open(dir: &Path) -> (RepoActor, mpsc::Receiver<Event>) {
+    let (tx, rx) = mpsc::channel();
+    let actor = RepoActor::open(dir, ActorOptions::default(), move |ev| {
+        let _ = tx.send(ev);
+    })
+    .unwrap();
+    (actor, rx)
+}
+
+fn identity(dir: &Path) {
+    fgc_fixtures::git(dir, &["config", "user.name", "T"]);
+    fgc_fixtures::git(dir, &["config", "user.email", "t@example.com"]);
+}
+
+/// Waits for `f` to match, ignoring errors (some tests provoke them).
+fn wait_for<T>(rx: &mpsc::Receiver<Event>, mut f: impl FnMut(&Event) -> Option<T>) -> T {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        let ev = rx.recv_timeout(left).expect("timed out waiting for event");
+        if let Some(v) = f(&ev) {
+            return v;
+        }
+    }
+}
+
+#[test]
+fn write_ops_report_and_refresh() {
+    let tmp = tempfile::tempdir().unwrap();
+    small_repo(tmp.path());
+    identity(tmp.path());
+    let (actor, rx) = open(tmp.path());
+
+    let id = actor.send(Command::Write(WriteOp::Stage(vec!["src/lib.rs".into()])));
+    let (label, command) = wait_for(&rx, |ev| match ev {
+        Event::OpStarted {
+            id: i,
+            label,
+            command,
+        } if *i == id => Some((label.clone(), command.clone())),
+        _ => None,
+    });
+    assert_eq!(label, "Stage src/lib.rs");
+    assert_eq!(command, "git add -- src/lib.rs");
+    let r = wait_for(&rx, |ev| match ev {
+        Event::OpFinished { id: i, result, .. } if *i == id => Some(result.clone()),
+        _ => None,
+    });
+    assert_eq!(r, Ok(()));
+    wait_for(&rx, |ev| match ev {
+        Event::Status(s) => s
+            .entries
+            .iter()
+            .any(|e| e.path == Path::new("src/lib.rs") && e.index == Change::Modified)
+            .then_some(()),
+        _ => None,
+    });
+
+    // Commit: the graph reloads with the new commit on top.
+    let id = actor.send(Command::Write(WriteOp::Commit {
+        message: "from the actor".into(),
+        amend: false,
+    }));
+    let r = wait_for(&rx, |ev| match ev {
+        Event::OpFinished { id: i, result, .. } if *i == id => Some(result.clone()),
+        _ => None,
+    });
+    assert_eq!(r, Ok(()));
+    let head = fgc_fixtures::git(tmp.path(), &["rev-parse", "HEAD"])
+        .parse::<Oid>()
+        .unwrap();
+    wait_for(&rx, |ev| match ev {
+        Event::Graph(g) if g.phase == Phase::Complete && g.layout.topology().len() == 7 => {
+            assert_eq!(g.layout.topology().oid(0), head);
+            Some(())
+        }
+        _ => None,
+    });
+
+    // Failures come back as results, not panics.
+    let id = actor.send(Command::Write(WriteOp::Checkout("no-such-branch".into())));
+    let r = wait_for(&rx, |ev| match ev {
+        Event::OpFinished { id: i, result, .. } if *i == id => Some(result.clone()),
+        _ => None,
+    });
+    assert!(r.unwrap_err().contains("no-such-branch"));
+}
+
+#[test]
+fn watcher_updates_status_and_graph() {
+    let tmp = tempfile::tempdir().unwrap();
+    small_repo(tmp.path());
+    identity(tmp.path());
+    let (actor, rx) = open(tmp.path());
+    wait_for(&rx, |ev| matches!(ev, Event::Status(_)).then_some(()));
+
+    // An editor saves a new file: a status update arrives without any command.
+    let t = std::time::Instant::now();
+    std::fs::write(tmp.path().join("saved.txt"), "hello\n").unwrap();
+    wait_for(&rx, |ev| match ev {
+        Event::Status(s) => s
+            .entries
+            .iter()
+            .any(|e| e.path == Path::new("saved.txt"))
+            .then_some(()),
+        _ => None,
+    });
+    assert!(
+        t.elapsed() < Duration::from_secs(2),
+        "took {:?}",
+        t.elapsed()
+    );
+
+    // A commit made in a terminal: refs change, the graph reloads.
+    fgc_fixtures::git(tmp.path(), &["add", "saved.txt"]);
+    fgc_fixtures::git(tmp.path(), &["commit", "-qm", "from terminal"]);
+    wait_for(&rx, |ev| match ev {
+        Event::Graph(g) if g.phase == Phase::Complete && g.layout.topology().len() == 7 => Some(()),
+        _ => None,
+    });
+    drop(actor);
+}
+
+#[test]
+fn network_ops_report_progress_and_result() {
+    let tmp = tempfile::tempdir().unwrap();
+    let seed = tmp.path().join("seed");
+    std::fs::create_dir_all(&seed).unwrap();
+    small_repo(&seed);
+    let origin = tmp.path().join("origin.git");
+    fgc_fixtures::git(
+        tmp.path(),
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            seed.to_str().unwrap(),
+            origin.to_str().unwrap(),
+        ],
+    );
+    let work = tmp.path().join("work");
+    fgc_fixtures::git(
+        tmp.path(),
+        &[
+            "clone",
+            "-q",
+            &format!("file://{}", origin.display()),
+            work.to_str().unwrap(),
+        ],
+    );
+    let (actor, rx) = open(&work);
+    let id = actor.send(Command::Network(NetworkOp::Fetch));
+    let (command, result) = wait_for(&rx, |ev| match ev {
+        Event::OpFinished {
+            id: i,
+            command,
+            result,
+            ..
+        } if *i == id => Some((command.clone(), result.clone())),
+        _ => None,
+    });
+    assert_eq!(result, Ok(()));
+    assert_eq!(command, "git fetch --all --prune --progress");
+    drop(actor);
+}

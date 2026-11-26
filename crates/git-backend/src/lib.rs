@@ -4,10 +4,12 @@
 //! one `Repository` per worker thread in a thread-local cache. The backend
 //! itself is cheap to share (`Arc<Git2Backend>`) across a worker pool.
 
+mod cli;
 mod commit_graph;
 mod convert;
 mod dag;
 mod walk;
+mod write;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -125,6 +127,20 @@ impl Git2Backend {
             let (_, repo) = map.get(&self.id).expect("inserted above");
             // Release the map borrow is not possible while `repo` is borrowed;
             // `f` must not re-enter `with_repo` (it never does internally).
+            f(repo)
+        })
+    }
+
+    /// Like `with_repo`, with a mutable handle (libgit2's stash API needs one).
+    fn with_repo_mut<T>(&self, f: impl FnOnce(&mut Repository) -> Result<T>) -> Result<T> {
+        REPOS.with(|cell| {
+            let mut map = cell.borrow_mut();
+            if !map.contains_key(&self.id) {
+                map.retain(|_, (alive, _)| alive.strong_count() > 0);
+                let repo = Repository::open(&self.git_dir).map_err(map_err)?;
+                map.insert(self.id, (Arc::downgrade(&self.alive), repo));
+            }
+            let (_, repo) = map.get_mut(&self.id).expect("inserted above");
             f(repo)
         })
     }
@@ -354,6 +370,61 @@ impl GitBackend for Git2Backend {
             }
             flatten_diff(&diff)
         })
+    }
+
+    #[tracing::instrument(level = "debug", skip_all, fields(paths = paths.len()))]
+    fn stage(&self, paths: &[PathBuf]) -> Result<()> {
+        self.with_repo(|r| write::stage(r, paths))
+    }
+
+    #[tracing::instrument(level = "debug", skip_all, fields(paths = paths.len()))]
+    fn unstage(&self, paths: &[PathBuf]) -> Result<()> {
+        self.with_repo(|r| write::unstage(r, paths))
+    }
+
+    #[tracing::instrument(level = "debug", skip_all)]
+    fn stage_hunk(&self, path: &Path, hunk: fgc_core::HunkSel) -> Result<()> {
+        self.with_repo(|r| write::stage_hunk(r, path, hunk))
+    }
+
+    #[tracing::instrument(level = "debug", skip_all)]
+    fn unstage_hunk(&self, path: &Path, hunk: fgc_core::HunkSel) -> Result<()> {
+        self.with_repo(|r| write::unstage_hunk(r, path, hunk))
+    }
+
+    #[tracing::instrument(level = "debug", skip_all, fields(amend))]
+    fn commit(&self, message: &str, amend: bool) -> Result<Oid> {
+        self.with_repo_mut(|r| write::commit(r, message, amend))
+    }
+
+    #[tracing::instrument(level = "debug", skip_all)]
+    fn create_branch(&self, name: &str, at: Oid, checkout: bool) -> Result<()> {
+        self.with_repo(|r| write::create_branch(r, name, at, checkout))
+    }
+
+    #[tracing::instrument(level = "debug", skip_all)]
+    fn checkout_branch(&self, name: &str) -> Result<()> {
+        self.with_repo(|r| write::checkout_branch(r, name))
+    }
+
+    #[tracing::instrument(level = "debug", skip_all)]
+    fn delete_branch(&self, name: &str, force: bool) -> Result<()> {
+        self.with_repo(|r| write::delete_branch(r, name, force))
+    }
+
+    #[tracing::instrument(level = "debug", skip_all)]
+    fn stash_push(&self, message: Option<&str>) -> Result<()> {
+        self.with_repo_mut(|r| write::stash_push(r, message))
+    }
+
+    #[tracing::instrument(level = "debug", skip_all)]
+    fn stash_pop(&self) -> Result<()> {
+        self.with_repo_mut(write::stash_pop)
+    }
+
+    #[tracing::instrument(level = "debug", skip_all, fields(op = ?op))]
+    fn network(&self, op: fgc_core::NetworkOp, progress: &dyn Fn(&str)) -> Result<String> {
+        self.with_repo(|r| write::network(r, op, progress))
     }
 }
 

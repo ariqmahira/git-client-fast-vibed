@@ -751,3 +751,370 @@ fn commit_metas_in_order() {
         Err(Error::NotFound(_))
     ));
 }
+
+// ---- M4: write path ----
+
+use fgc_core::{HunkSel, NetworkOp};
+
+/// small_repo plus a local identity (tests must not depend on ~/.gitconfig).
+fn small_writable() -> (tempfile::TempDir, SmallRepo, Git2Backend) {
+    let (tmp, repo, be) = small();
+    git(tmp.path(), &["config", "user.name", "Test User"]);
+    git(tmp.path(), &["config", "user.email", "test@example.com"]);
+    (tmp, repo, be)
+}
+
+fn status_of(be: &Git2Backend, path: &str) -> Option<(Change, Change)> {
+    be.status(&StatusOpts::default())
+        .unwrap()
+        .entries
+        .into_iter()
+        .find(|e| e.path == Path::new(path))
+        .map(|e| (e.index, e.worktree))
+}
+
+#[test]
+fn stage_and_unstage_files() {
+    let (tmp, _repo, be) = small_writable();
+    be.stage(&["src/lib.rs".into(), "notes/todo.txt".into()])
+        .unwrap();
+    assert_eq!(
+        status_of(&be, "src/lib.rs"),
+        Some((Change::Modified, Change::Unmodified))
+    );
+    assert_eq!(
+        status_of(&be, "notes/todo.txt"),
+        Some((Change::Added, Change::Unmodified))
+    );
+
+    be.unstage(&["README.md".into(), "docs/guide.md".into()])
+        .unwrap();
+    assert_eq!(
+        status_of(&be, "README.md"),
+        Some((Change::Unmodified, Change::Modified))
+    );
+    assert_eq!(
+        status_of(&be, "docs/guide.md"),
+        Some((Change::Unmodified, Change::Untracked))
+    );
+
+    // Deleted files stage as deletions.
+    std::fs::remove_file(tmp.path().join("main.txt")).unwrap();
+    be.stage(&["main.txt".into()]).unwrap();
+    assert_eq!(
+        status_of(&be, "main.txt"),
+        Some((Change::Deleted, Change::Unmodified))
+    );
+    assert!(git(tmp.path(), &["diff", "--cached", "--name-status"]).contains("D\tmain.txt"));
+}
+
+fn two_hunk_file(dir: &Path) {
+    let mut lines: Vec<String> = (1..=40).map(|i| format!("line {i}")).collect();
+    std::fs::write(dir.join("hunks.txt"), lines.join("\n") + "\n").unwrap();
+    git(dir, &["add", "hunks.txt"]);
+    git(dir, &["commit", "-qm", "hunks"]);
+    lines[2] = "line 3 changed".into();
+    lines[35] = "line 36 changed".into();
+    std::fs::write(dir.join("hunks.txt"), lines.join("\n") + "\n").unwrap();
+}
+
+fn file_hunks(be: &Git2Backend, target: DiffTarget, path: &str) -> Vec<HunkSel> {
+    let d = be
+        .diff(&DiffSpec::new(target).paths([path.into()]))
+        .unwrap();
+    d.files
+        .first()
+        .map(|f| d.file_hunks(f).iter().map(HunkSel::of).collect())
+        .unwrap_or_default()
+}
+
+#[test]
+fn stage_and_unstage_single_hunks() {
+    let (tmp, _repo, be) = small_writable();
+    two_hunk_file(tmp.path());
+    let wd = || DiffTarget::IndexToWorkdir {
+        include_untracked: true,
+    };
+    let hunks = file_hunks(&be, wd(), "hunks.txt");
+    assert_eq!(hunks.len(), 2);
+
+    be.stage_hunk(Path::new("hunks.txt"), hunks[1]).unwrap();
+    let staged = file_hunks(&be, DiffTarget::HeadToIndex, "hunks.txt");
+    let unstaged = file_hunks(&be, wd(), "hunks.txt");
+    assert_eq!(staged.len(), 1);
+    assert_eq!(unstaged.len(), 1);
+    assert!(git(tmp.path(), &["diff", "--cached"]).contains("+line 36 changed"));
+    assert!(git(tmp.path(), &["diff"]).contains("+line 3 changed"));
+
+    // A hunk header the file no longer has is refused, not guessed.
+    assert!(matches!(
+        be.stage_hunk(Path::new("hunks.txt"), hunks[1]),
+        Err(Error::InvalidInput(_))
+    ));
+
+    // Stage the rest, then unstage just the first hunk again.
+    be.stage(&["hunks.txt".into()]).unwrap();
+    let staged = file_hunks(&be, DiffTarget::HeadToIndex, "hunks.txt");
+    assert_eq!(staged.len(), 2);
+    be.unstage_hunk(Path::new("hunks.txt"), staged[0]).unwrap();
+    assert!(git(tmp.path(), &["diff", "--cached"]).contains("+line 36 changed"));
+    assert!(!git(tmp.path(), &["diff", "--cached"]).contains("+line 3 changed"));
+    assert!(git(tmp.path(), &["diff"]).contains("+line 3 changed"));
+}
+
+#[test]
+fn stage_hunk_of_untracked_file() {
+    let (tmp, _repo, be) = small_writable();
+    let hunks = file_hunks(
+        &be,
+        DiffTarget::IndexToWorkdir {
+            include_untracked: true,
+        },
+        "notes/todo.txt",
+    );
+    assert_eq!(hunks.len(), 1);
+    be.stage_hunk(Path::new("notes/todo.txt"), hunks[0])
+        .unwrap();
+    assert_eq!(
+        status_of(&be, "notes/todo.txt"),
+        Some((Change::Added, Change::Unmodified))
+    );
+    drop(tmp);
+}
+
+#[test]
+fn commit_and_amend() {
+    let (tmp, repo, be) = small_writable();
+    let id = be.commit("Add docs\n\n  body line  \n\n\n", false).unwrap();
+    assert_eq!(git(tmp.path(), &["rev-parse", "HEAD"]), id.to_string());
+    // Like `git commit --cleanup=whitespace`: trailing whitespace and extra
+    // blank lines go, indentation stays.
+    assert_eq!(
+        git(tmp.path(), &["log", "-1", "--format=%B"]),
+        "Add docs\n\n  body line"
+    );
+    assert_eq!(git(tmp.path(), &["rev-parse", "HEAD^"]), repo.head);
+    assert_eq!(git(tmp.path(), &["log", "-1", "--format=%an"]), "Test User");
+    assert_eq!(status_of(&be, "README.md"), None);
+
+    // Nothing staged now.
+    assert!(matches!(
+        be.commit("again", false),
+        Err(Error::InvalidInput(_))
+    ));
+    assert!(matches!(
+        be.commit("   \n", false),
+        Err(Error::InvalidInput(_))
+    ));
+
+    // Amend: same parent, new message, plus newly staged content.
+    be.stage(&["src/lib.rs".into()]).unwrap();
+    let amended = be.commit("Add docs and mul", true).unwrap();
+    assert_ne!(amended, id);
+    assert_eq!(git(tmp.path(), &["rev-parse", "HEAD^"]), repo.head);
+    assert_eq!(
+        git(tmp.path(), &["log", "-1", "--format=%s"]),
+        "Add docs and mul"
+    );
+    assert!(git(tmp.path(), &["show", "--stat", "HEAD"]).contains("src/lib.rs"));
+}
+
+#[cfg(unix)]
+#[test]
+fn commit_runs_hooks_via_cli() {
+    use std::os::unix::fs::PermissionsExt;
+    let (tmp, _repo, be) = small_writable();
+    let hook = tmp.path().join(".git/hooks/pre-commit");
+    std::fs::write(
+        &hook,
+        "#!/bin/sh\ntouch \"$(git rev-parse --git-dir)/hook-ran\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    be.commit("with hook", false).unwrap();
+    assert!(tmp.path().join(".git/hook-ran").exists());
+    assert_eq!(git(tmp.path(), &["log", "-1", "--format=%s"]), "with hook");
+
+    // A failing hook blocks the commit and its output reaches the user.
+    std::fs::write(
+        &hook,
+        "#!/bin/sh\necho 'lint failed: trailing spaces' >&2\nexit 1\n",
+    )
+    .unwrap();
+    be.stage(&["src/lib.rs".into()]).unwrap();
+    match be.commit("blocked", false) {
+        Err(Error::Engine(msg)) => assert!(msg.contains("lint failed"), "{msg}"),
+        other => panic!("expected hook failure, got {other:?}"),
+    }
+    assert_eq!(git(tmp.path(), &["log", "-1", "--format=%s"]), "with hook");
+}
+
+#[test]
+fn commit_concludes_a_merge() {
+    let (tmp, _repo, be) = small_writable();
+    let d = tmp.path();
+    git(d, &["stash", "-u", "-q"]);
+    git(d, &["checkout", "-q", "-b", "side", "HEAD~1"]);
+    std::fs::write(d.join("side.txt"), "side\n").unwrap();
+    git(d, &["add", "."]);
+    git(d, &["commit", "-qm", "side"]);
+    git(d, &["checkout", "-q", "main"]);
+    git(d, &["merge", "--no-commit", "--no-ff", "side"]);
+    be.commit("Merge side", false).unwrap();
+    assert_eq!(git(d, &["log", "-1", "--format=%P"]).split(' ').count(), 2);
+    assert!(!d.join(".git/MERGE_HEAD").exists());
+}
+
+#[test]
+fn branches_create_checkout_delete() {
+    let (tmp, repo, be) = small_writable();
+    let d = tmp.path();
+    git(d, &["stash", "-u", "-q"]); // clean tree for checkouts
+    let c2 = oid(&repo.commits[1]);
+
+    be.create_branch("topic", c2, false).unwrap();
+    assert_eq!(git(d, &["rev-parse", "topic"]), repo.commits[1]);
+    assert_eq!(git(d, &["branch", "--show-current"]), "main");
+    assert!(matches!(
+        be.create_branch("topic", c2, false),
+        Err(Error::InvalidInput(_))
+    ));
+    assert!(matches!(
+        be.create_branch("bad..name", c2, false),
+        Err(Error::InvalidInput(_))
+    ));
+
+    be.checkout_branch("topic").unwrap();
+    assert_eq!(git(d, &["branch", "--show-current"]), "topic");
+    assert_eq!(git(d, &["status", "--porcelain"]), "");
+    assert!(!d.join("feature.txt").exists());
+
+    be.create_branch("work", c2, true).unwrap();
+    assert_eq!(git(d, &["branch", "--show-current"]), "work");
+
+    // Checked-out branch can't be deleted; merged one can; unmerged needs force.
+    assert!(be.delete_branch("work", false).is_err());
+    be.checkout_branch("main").unwrap();
+    be.delete_branch("topic", false).unwrap();
+    git(d, &["checkout", "-q", "-b", "unmerged"]);
+    std::fs::write(d.join("u.txt"), "u").unwrap();
+    git(d, &["add", "."]);
+    git(d, &["commit", "-qm", "u"]);
+    git(d, &["checkout", "-q", "main"]);
+    assert!(matches!(
+        be.delete_branch("unmerged", false),
+        Err(Error::InvalidInput(_))
+    ));
+    be.delete_branch("unmerged", true).unwrap();
+    assert!(git(d, &["branch", "--list", "unmerged"]).is_empty());
+}
+
+#[test]
+fn checkout_refuses_to_overwrite_local_changes() {
+    let (tmp, _repo, be) = small_writable();
+    let d = tmp.path();
+    // feature.txt differs between main and feature~1... use a branch where
+    // the locally modified file differs.
+    git(d, &["stash", "-u", "-q"]);
+    git(d, &["checkout", "-q", "-b", "older", "HEAD~2"]);
+    git(d, &["checkout", "-q", "main"]);
+    std::fs::write(d.join("main.txt"), "local edit\n").unwrap();
+    match be.checkout_branch("older") {
+        Err(Error::InvalidInput(msg)) => assert!(msg.contains("local changes"), "{msg}"),
+        other => panic!("expected refusal, got {other:?}"),
+    }
+    assert_eq!(git(d, &["branch", "--show-current"]), "main");
+    assert_eq!(
+        std::fs::read_to_string(d.join("main.txt")).unwrap(),
+        "local edit\n"
+    );
+}
+
+#[test]
+fn stash_push_and_pop() {
+    let (tmp, _repo, be) = small_writable();
+    be.stash_push(Some("wip")).unwrap();
+    assert!(be.status(&StatusOpts::default()).unwrap().is_clean());
+    assert!(git(tmp.path(), &["stash", "list"]).contains("wip"));
+    assert!(matches!(be.stash_push(None), Err(Error::InvalidInput(_))));
+    be.stash_pop().unwrap();
+    assert_eq!(
+        status_of(&be, "src/lib.rs").map(|s| s.1),
+        Some(Change::Modified)
+    );
+    assert_eq!(
+        status_of(&be, "notes/todo.txt").map(|s| s.1),
+        Some(Change::Untracked)
+    );
+    assert!(matches!(be.stash_pop(), Err(Error::InvalidInput(_))));
+}
+
+#[test]
+fn network_push_fetch_pull_through_cli() {
+    let tmp = tempfile::tempdir().unwrap();
+    let origin = tmp.path().join("origin.git");
+    let seed = tmp.path().join("seed");
+    std::fs::create_dir_all(&seed).unwrap();
+    small_repo(&seed);
+    git(
+        tmp.path(),
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            seed.to_str().unwrap(),
+            origin.to_str().unwrap(),
+        ],
+    );
+    let url = format!("file://{}", origin.display());
+    let a = tmp.path().join("a");
+    let b = tmp.path().join("b");
+    git(tmp.path(), &["clone", "-q", &url, a.to_str().unwrap()]);
+    git(tmp.path(), &["clone", "-q", &url, b.to_str().unwrap()]);
+    for d in [&a, &b] {
+        git(d, &["config", "user.name", "T"]);
+        git(d, &["config", "user.email", "t@example.com"]);
+    }
+
+    let be_a = Git2Backend::open(&a).unwrap();
+    std::fs::write(a.join("pushed.txt"), "x\n").unwrap();
+    be_a.stage(&["pushed.txt".into()]).unwrap();
+    let c = be_a.commit("pushed", false).unwrap();
+    let lines = std::cell::RefCell::new(Vec::new());
+    let cmd = be_a
+        .network(NetworkOp::Push, &|l| lines.borrow_mut().push(l.to_owned()))
+        .unwrap();
+    assert_eq!(cmd, "git push --progress");
+    assert_eq!(git(&origin, &["rev-parse", "main"]), c.to_string());
+
+    // First push of a new branch sets its upstream.
+    git(&a, &["checkout", "-q", "-b", "fresh"]);
+    let cmd = be_a.network(NetworkOp::Push, &|_| {}).unwrap();
+    assert_eq!(cmd, "git push --progress -u origin HEAD");
+    assert_eq!(
+        git(&a, &["rev-parse", "--abbrev-ref", "fresh@{upstream}"]),
+        "origin/fresh"
+    );
+
+    let be_b = Git2Backend::open(&b).unwrap();
+    be_b.network(NetworkOp::Fetch, &|_| {}).unwrap();
+    assert_eq!(git(&b, &["rev-parse", "origin/main"]), c.to_string());
+    be_b.network(NetworkOp::Pull { rebase: false }, &|_| {})
+        .unwrap();
+    assert_eq!(git(&b, &["rev-parse", "HEAD"]), c.to_string());
+
+    // Failures carry git's reason.
+    git(
+        &b,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "file:///nonexistent/repo.git",
+        ],
+    );
+    match be_b.network(NetworkOp::Fetch, &|_| {}) {
+        Err(Error::Engine(msg)) => assert!(msg.contains("git fetch"), "{msg}"),
+        other => panic!("expected failure, got {other:?}"),
+    }
+}

@@ -67,6 +67,7 @@ ui_input_to_paint_p99 = 16
 # 100k committed files (monorepo working tree).
 [profiles.wide-100k]
 status_targeted = 150 # plan: working-tree status after a file save (watcher → pathspec)
+watch_to_status = 150 # M5: save a file → status snapshot, through the real watcher
 # Full status is the periodic safety net, not the save path. libgit2 is ~2x
 # slower than `git status` here; M7 evaluates gix. Guard against regressions.
 status = 600

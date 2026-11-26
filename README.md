@@ -10,8 +10,13 @@ A GitKraken replacement that **is** fast and **feels** fast: Rust core, libgit2 
 | M1 Core read path | Done: `GitBackend` + git2 impl (refs, paged commit walk, status, diff); linux.git first 500 commits in ~15 ms (budget 100 ms) |
 | M2 Graph engine | Done: commit-graph reader, date/topo ordering, chunked incremental lane layout with reuse, background `GraphEngine`; linux.git first screen in ~24 ms, full 1.5M-commit layout in ~0.5 s in the background |
 | M3 GPUI shell | Done: `fgc` window (virtualized graph, commit details, file list, diff view, working tree), keyboard navigation, debug overlay, `RepoActor`, scripted UI benchmark gated in CI |
-| M4 Write path | Next |
-| M5–M8 | Not started |
+| M4 Write path | Done (MVP scope): stage/unstage file and hunk, commit/amend (git CLI when hooks or signing are configured), branch create/checkout/delete, stash push/pop; writer thread, optimistic pending state, equivalent git command for every action |
+| M5 Watcher + live status | Done: debounced file watcher → targeted status merged into the snapshot; ref changes reload the graph. Save → status 31 ms on 100k files (budget 150 ms) |
+| M6 Network | Done (MVP scope): fetch/pull (ff-only)/push via the git CLI with streamed progress, credential helpers, upstream on first push |
+| M7 gix experiments | Not started |
+| M8 MVP polish | Not started (see [TESTING.md](TESTING.md) for what's missing) |
+
+**Trying it out:** see [TESTING.md](TESTING.md).
 
 ## Layout
 
@@ -20,17 +25,19 @@ A GitKraken replacement that **is** fast and **feels** fast: Rust core, libgit2 
 | `crates/core` (`fgc-core`) | UI- and engine-agnostic data model, the `GitBackend` trait, perf budgets and `FrameRecorder` |
 | `crates/git-backend` (`fgc-git-backend`) | libgit2 implementation; one `Repository` per worker thread; resumable commit walk; own commit-graph reader for full-history DAGs |
 | `crates/graph` (`fgc-graph`) | Row ordering, chunked lane layout, background `GraphEngine` with progressive snapshots |
-| `crates/actor` (`fgc-actor`) | `RepoActor`: owns backend + graph engine, priority worker pool, generation-id cancellation; UI-agnostic |
+| `crates/actor` (`fgc-actor`) | `RepoActor`: owns backend + graph engine, priority worker pool, writer thread, network thread, file watcher, generation-id cancellation; UI-agnostic |
 | `crates/ui` (`fgc-ui`) | GPUI shell: the `fgc` binary, views, lane painter, frame/input recorders, `--bench` mode |
 | `crates/fixtures` (`fgc-fixtures`) | Fixture/benchmark repos built with the git CLI (`fast-import` for large histories) |
 | `crates/bench` (`fgc-bench`) | Criterion benches and the `fgc-probe` CLI |
 
 ![linux.git in fgc](docs/screenshots/linux.png)
 
+![Working tree: stage hunks, commit](docs/screenshots/working-tree.png)
+
 ## Running
 
 ```sh
-cargo run --release -p fgc-ui -- path/to/repo   # the app (keys: ↑/↓ j/k, PgUp/PgDn, Home/End, w = working tree, [ ] = files, ctrl-shift-d = debug overlay)
+cargo run --release -p fgc-ui -- path/to/repo   # the app; keys and features in TESTING.md
 
 cargo test --workspace
 
@@ -69,6 +76,7 @@ linux.git: 1,508,433 commits, 955 refs, commit-graph file present (bare, blob-le
 | relayout after a new commit | 3.5 ms | 0.3 ms | | |
 | status, targeted (1 path) | | | 2.6 ms | 150 ms |
 | status, full | | 3.6 ms | 202 ms | (safety net) |
+| save a file → status snapshot (watcher) | | | 31 ms | 150 ms |
 
 Graph memory on linux.git: topology 49 MB + layout 18 MB.
 
