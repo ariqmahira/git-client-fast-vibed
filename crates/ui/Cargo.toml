@@ -1,6 +1,6 @@
 [package]
 name = "fgc-ui"
-description = "GPUI shell (milestone M3)"
+description = "GPUI shell: window, virtualized commit graph, file list, diff view"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,3 +9,18 @@ publish.workspace = true
 
 [dependencies]
 fgc-core.workspace = true
+fgc-actor.workspace = true
+fgc-bench.workspace = true
+fgc-git-backend.workspace = true
+gpui.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+futures = "0.3.31"
+env_logger = "0.11"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[[bin]]
+name = "fgc"
+path = "src/main.rs"

@@ -18,7 +18,7 @@ use fgc_fixtures::{SyntheticSpec, small_repo, synthetic_history, wide_tree};
 struct Args {
     /// Output directory; each profile becomes a subdirectory.
     out: PathBuf,
-    /// Profiles to generate. Default: small, history-200k, wide-100k.
+    /// Profiles to generate. Default: small, history-200k, wide-100k, diff-5k.
     profiles: Vec<Profile>,
     /// Regenerate even if the directory already exists.
     #[arg(long)]
@@ -38,6 +38,9 @@ enum Profile {
     /// 100k files committed: monorepo working tree for status.
     #[value(name = "wide-100k")]
     Wide100k,
+    /// HEAD changes 5,000 lines of one file (diff view benchmarks).
+    #[value(name = "diff-5k")]
+    Diff5k,
 }
 
 impl Profile {
@@ -47,6 +50,7 @@ impl Profile {
             Profile::History200k => "history-200k",
             Profile::Huge => "huge-1m3",
             Profile::Wide100k => "wide-100k",
+            Profile::Diff5k => "diff-5k",
         }
     }
 }
@@ -54,7 +58,12 @@ impl Profile {
 fn main() -> std::io::Result<()> {
     let args = Args::parse();
     let profiles = if args.profiles.is_empty() {
-        vec![Profile::Small, Profile::History200k, Profile::Wide100k]
+        vec![
+            Profile::Small,
+            Profile::History200k,
+            Profile::Wide100k,
+            Profile::Diff5k,
+        ]
     } else {
         args.profiles.clone()
     };
@@ -101,5 +110,6 @@ fn generate(p: Profile, dir: &Path) -> std::io::Result<()> {
             },
         ),
         Profile::Wide100k => wide_tree(dir, 100_000),
+        Profile::Diff5k => fgc_fixtures::big_diff(dir),
     }
 }

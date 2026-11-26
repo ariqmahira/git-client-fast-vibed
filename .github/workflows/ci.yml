@@ -22,6 +22,10 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - name: Linux system packages for GPUI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libx11-xcb-dev
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
@@ -37,6 +41,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Linux system packages for GPUI
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libx11-xcb-dev
       - run: cargo test --workspace
       - run: cargo bench --workspace --no-run
 
@@ -70,6 +79,40 @@ jobs:
           name: probe-reports-synthetic
           path: probe-reports
 
+  ui:
+    name: UI budgets (headless GPUI)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: System packages (X11 headers, Xvfb, Mesa software Vulkan)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb xdotool x11-utils mesa-vulkan-drivers \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libx11-xcb-dev \
+            fonts-dejavu-core fonts-inter
+      - run: cargo build --release -p fgc-ui -p fgc-fixtures
+      - name: Cache generated bench repos
+        uses: actions/cache@v4
+        with:
+          path: bench-repos
+          key: bench-repos-ui-${{ runner.os }}-${{ hashFiles('crates/fixtures/**') }}
+      - run: ./target/release/fgc-fixtures bench-repos history-200k diff-5k
+      - name: UI benchmark
+        run: |
+          set -euo pipefail
+          mkdir -p ui-reports
+          for p in history-200k diff-5k; do
+            scripts/ui-headless.sh ./target/release/fgc bench-repos/$p --bench \
+              --budgets budgets.toml --profile $p --report ui-reports/$p.json
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-reports
+          path: ui-reports
+
   budgets-linux:
     name: performance budgets (linux.git)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -92,6 +135,17 @@ jobs:
           mkdir -p probe-reports
           ./target/release/fgc-probe bench-repos/linux.git --budgets budgets.toml \
             --profile linux --json probe-reports/linux.json
+      - name: UI system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb xdotool x11-utils mesa-vulkan-drivers \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libx11-xcb-dev \
+            fonts-dejavu-core fonts-inter
+      - name: UI benchmark (linux.git)
+        run: |
+          cargo build --release -p fgc-ui
+          scripts/ui-headless.sh ./target/release/fgc bench-repos/linux.git --bench \
+            --budgets budgets.toml --profile linux --report probe-reports/ui-linux.json
       - name: Criterion (external repo)
         env:
           FGC_BENCH_REPO: ${{ github.workspace }}/bench-repos/linux.git

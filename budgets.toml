@@ -34,6 +34,36 @@ layout_full = 20
 geometry_window = 2        # per frame; frame budget is 8.3 ms
 relayout_new_commit = 10
 
+# M3 UI (fgc --bench, headless: Xvfb + Mesa llvmpipe software Vulkan).
+# Frames are timed from the root view's render to the end of paint, p99 per
+# phase. Two numbers per phase:
+#   *_cpu_p99: UI-thread CPU time in that window: the app's own work. Gated
+#              at the plan's 120 fps budget (8.33 ms).
+#   *_p99:     wall time of the same window. Under software rendering it also
+#              includes preemption by llvmpipe's rasterizer threads, which
+#              doesn't exist on a GPU; gated at 16.7 ms (no dropped frame at
+#              60 Hz) as a guard.
+# Memory is what the app allocated (anonymous memory; excludes memory-mapped
+# files and the software GPU's mappings, which live in VRAM on real hardware).
+ui_first_paint = 300            # plan: cold start to first frame
+ui_graph_first_snapshot = 400   # plan: open repo → first commits visible
+ui_scroll_graph_cpu_p99 = 8.33  # plan: 120 fps scroll
+ui_jump_graph_cpu_p99 = 8.33
+ui_scroll_diff_cpu_p99 = 8.33
+ui_scroll_graph_p99 = 16.7
+ui_jump_graph_p99 = 16.7
+ui_scroll_diff_p99 = 16.7
+ui_input_to_paint_p99 = 16      # plan: input → paint
+ui_app_anon_idle_mb = 150       # plan: idle memory
+
+# HEAD changes 5,000 lines of one file.
+[profiles.diff-5k]
+ui_first_paint = 300
+ui_diff_open = 100              # plan: open a 5,000-line diff, first screen
+ui_scroll_diff_cpu_p99 = 8.33
+ui_scroll_diff_p99 = 16.7
+ui_input_to_paint_p99 = 16
+
 # 100k committed files (monorepo working tree).
 [profiles.wide-100k]
 status_targeted = 150 # plan: working-tree status after a file save (watcher → pathspec)
@@ -59,3 +89,12 @@ topo_sort = 800
 layout_full = 100
 geometry_window = 2          # per frame; frame budget is 8.3 ms
 relayout_new_commit = 50
+# M3 UI on linux.git (blob-less: diff phases are skipped)
+ui_first_paint = 300
+ui_graph_first_snapshot = 400
+ui_scroll_graph_cpu_p99 = 8.33
+ui_jump_graph_cpu_p99 = 8.33
+ui_scroll_graph_p99 = 16.7
+ui_jump_graph_p99 = 16.7
+ui_input_to_paint_p99 = 16
+ui_app_anon_idle_mb = 150

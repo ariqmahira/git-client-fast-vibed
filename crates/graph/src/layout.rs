@@ -41,7 +41,7 @@ struct Chunk {
 }
 
 /// Everything needed to draw one row.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RowGeometry {
     pub row: u32,
     /// Lane of the commit dot.
@@ -203,6 +203,15 @@ impl Layout {
     /// Geometry for `rows` (clamped to the laid-out rows). Replays from the
     /// nearest chunk checkpoint: at most `CHUNK_ROWS` extra rows of work.
     pub fn rows(&self, rows: Range<u32>) -> Vec<RowGeometry> {
+        self.rows_clipped(rows, u16::MAX)
+    }
+
+    /// Like [`Layout::rows`], but pass-through lanes at or beyond
+    /// `max_lanes` are left out. A UI that draws only the first N lanes
+    /// should use this: on very wide graphs (linux.git: 3,802 lanes) it
+    /// avoids building thousands of entries per row it would never draw.
+    /// `lane` and `outgoing` are always complete.
+    pub fn rows_clipped(&self, rows: Range<u32>, max_lanes: u16) -> Vec<RowGeometry> {
         let end = rows.end.min(self.rows_laid);
         if rows.start >= end {
             return Vec::new();
@@ -228,17 +237,21 @@ impl Layout {
                 step_row(&mut lanes, &mut expect, row, parents, None);
                 continue;
             }
-            let before = lanes.clone();
+            // Lanes passing through: active before this row, except the one
+            // that ends in this commit's dot.
+            let incoming = ExpectMap::get(&expect, row);
+            let visible = lanes.len().min(max_lanes as usize);
+            let passthrough = lanes[..visible]
+                .iter()
+                .enumerate()
+                .filter(|&(i, &l)| l != FREE && incoming != Some(i as u16))
+                .map(|(i, _)| i as u16)
+                .collect();
             let mut outgoing = Vec::with_capacity(parents.len());
             let (lane, has_incoming) =
                 step_row(&mut lanes, &mut expect, row, parents, Some(&mut outgoing));
             debug_assert_eq!(Some(lane), self.lane(row), "replay diverged at row {row}");
-            let passthrough = before
-                .iter()
-                .enumerate()
-                .filter(|&(i, &l)| l != FREE && !(has_incoming && i == lane as usize))
-                .map(|(i, _)| i as u16)
-                .collect();
+            debug_assert_eq!(has_incoming, incoming.is_some());
             out.push(RowGeometry {
                 row,
                 lane,
@@ -603,6 +616,23 @@ mod tests {
                 w,
                 rows[start as usize..(start as usize + 10).min(5000)].to_vec()
             );
+        }
+    }
+
+    #[test]
+    fn clipped_rows_drop_only_far_passthroughs() {
+        let t = topo(&synthetic(3000, 9));
+        let l = LayoutBuilder::new(t).finish();
+        assert!(l.max_lanes() > 3, "need a wide-ish graph");
+        let full = l.rows(0..3000);
+        let clipped = l.rows_clipped(0..3000, 3);
+        for (f, c) in full.iter().zip(&clipped) {
+            assert_eq!(
+                (f.row, f.lane, f.has_incoming, &f.outgoing),
+                (c.row, c.lane, c.has_incoming, &c.outgoing)
+            );
+            let expect: Vec<u16> = f.passthrough.iter().copied().filter(|&p| p < 3).collect();
+            assert_eq!(c.passthrough, expect);
         }
     }
 

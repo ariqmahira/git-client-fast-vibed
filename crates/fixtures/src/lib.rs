@@ -393,6 +393,38 @@ pub fn wide_tree(dir: &Path, files: u32) -> io::Result<()> {
     Ok(())
 }
 
+/// Creates a repository whose HEAD commit changes every other line of a
+/// 10,000-line Rust file: a 5,000-addition / 5,000-deletion diff in one
+/// hunk-dense file (plan §1: "open a 5,000-line diff").
+pub fn big_diff(dir: &Path) -> io::Result<()> {
+    fs::create_dir_all(dir)?;
+    git(dir, &["init", "-q"]);
+    let render = |variant: &str| {
+        let mut s = String::with_capacity(10_000 * 48);
+        for i in 0..10_000 {
+            if i % 2 == 0 {
+                s.push_str(&format!(
+                    "    let value_{i} = compute({i}, \"{variant}\");\n"
+                ));
+            } else {
+                s.push_str(&format!("    // line {i}: unchanged context\n"));
+            }
+        }
+        s
+    };
+    fs::write(dir.join("big.rs"), render("before"))?;
+    git(dir, &["add", "-A"]);
+    git_at(dir, &["commit", "-q", "-m", "big file"], Some(BASE_TIME));
+    fs::write(dir.join("big.rs"), render("after"))?;
+    git(dir, &["add", "-A"]);
+    git_at(
+        dir,
+        &["commit", "-q", "-m", "change every other line"],
+        Some(BASE_TIME + 60),
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -427,6 +459,15 @@ mod tests {
         assert_eq!(small_repo(&d2).commits, r.commits);
         fs::remove_dir_all(d).ok();
         fs::remove_dir_all(d2).ok();
+    }
+
+    #[test]
+    fn big_diff_shape() {
+        let d = tmp("bigdiff");
+        big_diff(&d).unwrap();
+        let stat = git(&d, &["diff", "--numstat", "HEAD~1", "HEAD"]);
+        assert_eq!(stat, "5000\t5000\tbig.rs");
+        fs::remove_dir_all(d).ok();
     }
 
     #[test]

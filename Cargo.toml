@@ -4,6 +4,7 @@ members = [
     "crates/core",
     "crates/git-backend",
     "crates/graph",
+    "crates/actor",
     "crates/ui",
     "crates/fixtures",
     "crates/bench",
@@ -20,12 +21,16 @@ publish = false
 fgc-core = { path = "crates/core" }
 fgc-git-backend = { path = "crates/git-backend" }
 fgc-graph = { path = "crates/graph" }
+fgc-actor = { path = "crates/actor" }
+fgc-bench = { path = "crates/bench" }
 fgc-fixtures = { path = "crates/fixtures" }
 
 # libgit2 is vendored so every platform builds the same engine version.
 # No https/ssh features: network ops go through the git CLI (plan §3).
 git2 = { version = "0.21.0", default-features = false, features = ["vendored-libgit2"] }
 memmap2 = "0.9.12"
+# Pinned exactly: GPUI churns between releases (plan §8).
+gpui = "=0.2.2"
 thiserror = "2.0.21"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.23", features = ["fmt", "env-filter"] }
@@ -42,3 +47,7 @@ debug = "line-tables-only"
 # Benchmarks and the probe should measure optimized code, with symbols for profiling.
 [profile.bench]
 debug = "line-tables-only"
+
+[patch.crates-io]
+# See third_party/README.md.
+xattr = { path = "third_party/xattr-0.2.3" }

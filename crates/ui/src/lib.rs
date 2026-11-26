@@ -1,3 +1,12 @@
-//! GPUI shell. Milestone M3; intentionally empty until the M1/M2 benchmarks
-//! exist and pass (plan §9). GPUI will be pinned to an exact version here so
-//! its churn stays isolated from the UI-agnostic core.
+//! GPUI shell (M3): window, virtualized commit graph, file list, diff view.
+//!
+//! The UI thread renders immutable snapshots and sends commands to the
+//! [`fgc_actor::RepoActor`]; it never calls Git.
+
+pub mod bench;
+pub mod diff_doc;
+pub mod graph_paint;
+pub mod perf;
+pub mod theme;
+pub mod util;
+pub mod view;

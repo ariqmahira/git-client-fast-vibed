@@ -28,6 +28,31 @@ use walk::WalkCache;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
+/// libgit2's object cache limit applies to each `Repository` handle, and we
+/// keep one handle per worker thread, so the default (256 MB) would let
+/// every worker grow its own cache while the user scrolls through random
+/// history. The graph engine doesn't use it (it reads the commit-graph), and
+/// metadata/diff lookups rarely revisit objects, so a small cap per handle
+/// keeps memory flat (plan §1: idle < 150 MB with linux.git open).
+pub const DEFAULT_OBJECT_CACHE_BYTES: usize = 8 * 1024 * 1024;
+
+static CACHE_LIMIT: std::sync::Once = std::sync::Once::new();
+
+/// Pack files are memory-mapped in windows; touched pages count as resident
+/// memory. libgit2's default mapped limit is 8 GB on 64-bit, so browsing
+/// random history in a 2 GB pack (linux.git) would keep growing RSS. Windows
+/// beyond this limit are unmapped least-recently-used first.
+pub const DEFAULT_MWINDOW_MAPPED_LIMIT: usize = 128 * 1024 * 1024;
+pub const DEFAULT_MWINDOW_SIZE: usize = 32 * 1024 * 1024;
+
+/// Overrides the libgit2 object cache limit (process-wide).
+pub fn set_object_cache_limit(bytes: usize) {
+    // SAFETY: sets a libgit2 global option; libgit2 synchronizes it internally.
+    if let Err(e) = unsafe { git2::opts::set_cache_max_size(bytes as _) } {
+        tracing::warn!("cannot set libgit2 cache size: {e}");
+    }
+}
+
 thread_local! {
     /// Per-thread repository handles, keyed by backend id. The `Weak` lets a
     /// thread drop handles whose backend is gone (closed repo tab) on its next
@@ -54,6 +79,14 @@ impl Git2Backend {
     /// Opens the repository containing `path` (searching upwards).
     #[tracing::instrument(level = "debug", skip_all, fields(path = %path.as_ref().display()))]
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        CACHE_LIMIT.call_once(|| {
+            set_object_cache_limit(DEFAULT_OBJECT_CACHE_BYTES);
+            // SAFETY: libgit2 global options, set once before any pack is opened by us.
+            unsafe {
+                let _ = git2::opts::set_mwindow_size(DEFAULT_MWINDOW_SIZE as _);
+                let _ = git2::opts::set_mwindow_mapped_limit(DEFAULT_MWINDOW_MAPPED_LIMIT as _);
+            }
+        });
         let path = path.as_ref();
         let repo = Repository::discover(path).map_err(|e| {
             if e.code() == git2::ErrorCode::NotFound {

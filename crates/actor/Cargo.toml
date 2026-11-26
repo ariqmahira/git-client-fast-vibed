@@ -1,0 +1,21 @@
+[package]
+name = "fgc-actor"
+description = "RepoActor: owns a repository's backend and graph engine, runs jobs off the UI thread by priority"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+fgc-core.workspace = true
+fgc-graph.workspace = true
+fgc-git-backend.workspace = true
+tracing.workspace = true
+
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+fgc-fixtures.workspace = true
+tempfile.workspace = true
