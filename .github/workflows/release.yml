@@ -33,7 +33,9 @@ jobs:
       fail-fast: true
       matrix:
         include:
-          - { os: ubuntu-latest, name: linux-x86_64 }
+          # Oldest supported runner: glibc is backward compatible only, so
+          # building on the newest Ubuntu would lock out older distros.
+          - { os: ubuntu-22.04, name: linux-x86_64 }
           - { os: macos-latest, name: macos-arm64 }
           - { os: windows-latest, name: windows-x86_64 }
     runs-on: ${{ matrix.os }}
@@ -47,6 +49,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libx11-xcb-dev
       - run: cargo build --release -p fgc-ui
+      - name: Check glibc requirement (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          need=$(objdump -T target/release/fgc | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+          echo "highest glibc symbol version: $need"
+          # Must run on Ubuntu 22.04 / Debian 12 and newer.
+          [ "$(printf '%s\n' "$need" GLIBC_2.35 | sort -V | tail -1)" = "GLIBC_2.35" ] || { echo "binary needs $need (> 2.35)"; exit 1; }
       - name: Package (Linux/macOS)
         if: runner.os != 'Windows'
         run: |

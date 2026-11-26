@@ -8,13 +8,13 @@ fgc is an early build of a fast git client. It covers browsing, the working tree
 
 **Prebuilt:** download the archive for your platform from the repository's **Releases** page (GitHub → Releases): `fgc-linux-x86_64.tar.gz`, `fgc-macos-arm64.tar.gz` or `fgc-windows-x86_64.zip`, and unpack it. The macOS binary is unsigned; right-click → Open the first time.
 
-**From source** (Rust stable):
+**From source** (Rust stable; on Linux first install `libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libx11-xcb-dev`):
 
 ```sh
 cargo build --release -p fgc-ui      # binary: target/release/fgc
 ```
 
-Linux needs `libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libx11-xcb-dev` to build and a Vulkan driver to run (any desktop with GPU drivers has one). `git` must be on your `PATH` (it's used for fetch/pull/push and for commits when you have hooks or signing).
+The Linux build runs on glibc 2.35+ (Ubuntu 22.04, Debian 12 and newer). It needs a Vulkan driver to run (any desktop with GPU drivers has one). `git` must be on your `PATH` (it's used for fetch/pull/push and for commits when you have hooks or signing).
 
 ## Run it
 
