@@ -1,0 +1,31 @@
+[package]
+name = "fgc-bench"
+description = "Benchmark harness: criterion benches and the fgc-probe timing/budget CLI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+fgc-core.workspace = true
+fgc-git-backend.workspace = true
+fgc-fixtures.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+tempfile.workspace = true
+
+[[bin]]
+name = "fgc-probe"
+path = "src/bin/fgc-probe.rs"
+
+[[bench]]
+name = "backend"
+harness = false

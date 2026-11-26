@@ -1,0 +1,41 @@
+# Performance budgets enforced in CI by `fgc-probe --budgets budgets.toml --profile <name>`.
+#
+# Values are milliseconds, compared against the median of --iters runs.
+# Measurements without an entry are reported but not gated.
+#
+# Plan §1 budgets are used where a measurement maps onto one. Other entries
+# are regression guards with headroom for shared CI runners (~3-5x the
+# numbers measured on a 4-core dev container).
+
+[profiles.small]
+open_to_first_page = 20
+walk_first_page = 10
+status = 20
+diff_workdir = 20
+diff_head_commit = 20
+
+# 200k commits, 8 parallel topic lanes (synthetic, fast-import).
+[profiles.history-200k]
+open_to_first_page = 400 # plan: open repo → first commits visible (backend share)
+walk_first_page = 100    # M1 acceptance (linux.git target; see [profiles.linux])
+walk_next_page = 50      # paging must cost the page, not the offset
+walk_cached_page = 10
+"open+refs" = 20
+status = 60
+diff_head_commit = 100   # plan: 5,000-line diff first screen
+
+# 100k committed files (monorepo working tree).
+[profiles.wide-100k]
+status_targeted = 150 # plan: working-tree status after a file save (watcher → pathspec)
+# Full status is the periodic safety net, not the save path. libgit2 is ~2x
+# slower than `git status` here; M7 evaluates gix. Guard against regressions.
+status = 600
+diff_workdir = 600
+
+# linux.git, bare blob-less clone from scripts/fetch-bench-repos.sh.
+[profiles.linux]
+walk_first_page = 100    # M1 acceptance: first 500 commits < 100 ms
+open_to_first_page = 400 # plan: open repo → first commits visible
+walk_next_page = 60
+walk_cached_page = 15
+"open+refs" = 60

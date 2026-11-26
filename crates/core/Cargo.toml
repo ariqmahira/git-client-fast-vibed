@@ -1,0 +1,12 @@
+[package]
+name = "fgc-core"
+description = "UI-agnostic core types and the GitBackend trait for the fast git client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true

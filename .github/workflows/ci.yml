@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Nightly: linux.git budgets + full criterion run.
+    - cron: "17 3 * * *"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  check:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows early: it is usually the slowest platform for status/watcher.
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+      - run: cargo bench --workspace --no-run
+
+  budgets:
+    name: performance budgets (synthetic repos)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p fgc-bench -p fgc-fixtures
+      - name: Cache generated bench repos
+        uses: actions/cache@v4
+        with:
+          path: bench-repos
+          key: bench-repos-${{ runner.os }}-${{ hashFiles('crates/fixtures/**') }}
+      - name: Generate bench repos
+        run: ./target/release/fgc-fixtures bench-repos small history-200k wide-100k
+      - name: Probe budgets
+        run: |
+          set -euo pipefail
+          mkdir -p probe-reports
+          P=./target/release/fgc-probe
+          $P bench-repos/small --budgets budgets.toml --profile small --json probe-reports/small.json
+          $P bench-repos/history-200k --budgets budgets.toml --profile history-200k --json probe-reports/history-200k.json
+          $P bench-repos/wide-100k --iters 5 --status-path pkg0050/file0500.txt \
+             --budgets budgets.toml --profile wide-100k --json probe-reports/wide-100k.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-reports-synthetic
+          path: probe-reports
+
+  budgets-linux:
+    name: performance budgets (linux.git)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p fgc-bench
+      - name: Cache linux.git
+        uses: actions/cache@v4
+        with:
+          path: bench-repos/linux.git
+          key: linux-git-${{ github.run_id }}
+          restore-keys: linux-git-
+      - run: scripts/fetch-bench-repos.sh
+      - name: Probe budgets
+        run: |
+          mkdir -p probe-reports
+          ./target/release/fgc-probe bench-repos/linux.git --budgets budgets.toml \
+            --profile linux --json probe-reports/linux.json
+      - name: Criterion (external repo)
+        env:
+          FGC_BENCH_REPO: ${{ github.workspace }}/bench-repos/linux.git
+        run: cargo bench -p fgc-bench
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-reports-linux
+          path: |
+            probe-reports
+            target/criterion

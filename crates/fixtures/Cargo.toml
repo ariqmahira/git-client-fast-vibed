@@ -1,0 +1,15 @@
+[package]
+name = "fgc-fixtures"
+description = "Scripted fixture and benchmark repositories, built with the git CLI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+clap.workspace = true
+
+[[bin]]
+name = "fgc-fixtures"
+path = "src/main.rs"
