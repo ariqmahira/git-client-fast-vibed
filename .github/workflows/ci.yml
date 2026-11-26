@@ -129,6 +129,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p ui-reports
+          # Warm-up launch: fills Mesa's shader cache (llvmpipe JIT-compiles
+          # every pipeline on first use) and the page cache, so first-paint
+          # measures the app, not software Vulkan's one-time compile.
+          scripts/ui-headless.sh ./target/release/fgc bench-repos/diff-5k --bench --bench-frames 5 --bench-inputs 2 > /dev/null
           for p in history-200k diff-5k; do
             scripts/ui-headless.sh ./target/release/fgc bench-repos/$p --bench \
               --budgets budgets.toml --profile $p --report ui-reports/$p.json

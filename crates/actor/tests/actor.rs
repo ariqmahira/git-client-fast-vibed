@@ -287,12 +287,7 @@ fn network_ops_report_progress_and_result() {
     let work = tmp.path().join("work");
     fgc_fixtures::git(
         tmp.path(),
-        &[
-            "clone",
-            "-q",
-            &format!("file://{}", origin.display()),
-            work.to_str().unwrap(),
-        ],
+        &["clone", "-q", &file_url(&origin), work.to_str().unwrap()],
     );
     let (actor, rx) = open(&work);
     let id = actor.send(Command::Network(NetworkOp::Fetch));
@@ -308,4 +303,11 @@ fn network_ops_report_progress_and_result() {
     assert_eq!(result, Ok(()));
     assert_eq!(command, "git fetch --all --prune --progress");
     drop(actor);
+}
+
+/// A `file://` URL for a local path (Windows paths need `file:///C:/...`).
+#[allow(dead_code)]
+fn file_url(p: &std::path::Path) -> String {
+    let s = p.display().to_string().replace('\\', "/");
+    format!("file:///{}", s.trim_start_matches('/'))
 }

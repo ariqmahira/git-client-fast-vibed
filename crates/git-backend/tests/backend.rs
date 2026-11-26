@@ -353,13 +353,22 @@ fn status_bare_is_empty() {
 fn diff_head_to_index() {
     let (_tmp, _repo, be) = small();
     let d = be.diff(&DiffSpec::new(DiffTarget::HeadToIndex)).unwrap();
-    let paths: Vec<_> = d.files.iter().map(|f| f.path().unwrap().clone()).collect();
+    // libgit2 orders paths case-insensitively where core.ignorecase is set
+    // (macOS, Windows), so compare as a set.
+    let mut paths: Vec<_> = d.files.iter().map(|f| f.path().unwrap().clone()).collect();
+    paths.sort();
     assert_eq!(
         paths,
         vec![PathBuf::from("README.md"), PathBuf::from("docs/guide.md")]
     );
+    let file = |p: &str| {
+        d.files
+            .iter()
+            .find(|f| f.path().unwrap() == Path::new(p))
+            .unwrap()
+    };
 
-    let readme = &d.files[0];
+    let readme = file("README.md");
     assert_eq!(readme.change, FileChange::Modified);
     assert_eq!((readme.additions, readme.deletions), (1, 1));
     let hunks = d.file_hunks(readme);
@@ -373,7 +382,7 @@ fn diff_head_to_index() {
     assert_eq!(add.new_lineno, Some(3));
     assert!(hunks[0].header.starts_with("@@ -1,3 +1,3 @@"));
 
-    let guide = &d.files[1];
+    let guide = file("docs/guide.md");
     assert_eq!(guide.change, FileChange::Added);
     assert_eq!(guide.old_path, None);
     assert_eq!((guide.additions, guide.deletions), (1, 0));
@@ -697,7 +706,7 @@ fn corrupt_commit_graph_falls_back_to_parsing() {
 fn commit_dag_shallow_clone_ignores_graph_and_stops_at_boundary() {
     let (_tmp, dir) = synthetic(300, true);
     let tmp2 = tempfile::tempdir().unwrap();
-    let url = format!("file://{}", dir.display());
+    let url = file_url(&dir);
     let clone = tmp2.path().join("c");
     git(
         tmp2.path(),
@@ -1066,7 +1075,7 @@ fn network_push_fetch_pull_through_cli() {
             origin.to_str().unwrap(),
         ],
     );
-    let url = format!("file://{}", origin.display());
+    let url = file_url(&origin);
     let a = tmp.path().join("a");
     let b = tmp.path().join("b");
     git(tmp.path(), &["clone", "-q", &url, a.to_str().unwrap()]);
@@ -1117,4 +1126,11 @@ fn network_push_fetch_pull_through_cli() {
         Err(Error::Engine(msg)) => assert!(msg.contains("git fetch"), "{msg}"),
         other => panic!("expected failure, got {other:?}"),
     }
+}
+
+/// A `file://` URL for a local path (Windows paths need `file:///C:/...`).
+#[allow(dead_code)]
+fn file_url(p: &std::path::Path) -> String {
+    let s = p.display().to_string().replace('\\', "/");
+    format!("file:///{}", s.trim_start_matches('/'))
 }

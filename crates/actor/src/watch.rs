@@ -70,6 +70,22 @@ pub fn classify(path: &Path, git_dirs: &[PathBuf], workdir: Option<&Path>, out: 
     }
 }
 
+/// On Windows `canonicalize` returns verbatim paths (`\\?\C:\...`) but
+/// file-system events report plain ones (`C:\...`); strip the prefix so the
+/// two compare equal. A no-op elsewhere.
+fn simplify(p: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let s = p.to_string_lossy();
+        if let Some(rest) = s.strip_prefix(r"\\?\") {
+            if !rest.starts_with("UNC\\") {
+                return PathBuf::from(rest.to_owned());
+            }
+        }
+    }
+    p
+}
+
 impl RepoWatcher {
     /// Watches `workdir` (if any) and the git directories, calling
     /// `on_change` on a background thread once per debounced burst.
@@ -79,7 +95,7 @@ impl RepoWatcher {
         on_change: impl Fn(FsChanges) + Send + 'static,
     ) -> notify::Result<RepoWatcher> {
         // Canonicalize so event paths (which the OS reports resolved) match.
-        let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+        let canon = |p: &Path| simplify(p.canonicalize().unwrap_or_else(|_| p.to_path_buf()));
         let git_dirs: Vec<PathBuf> = git_dirs.iter().map(|p| canon(p)).collect();
         let workdir = workdir.map(|p| canon(&p));
 
