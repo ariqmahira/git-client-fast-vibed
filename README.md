@@ -68,7 +68,7 @@ The engine publishes a provisional snapshot built from the first page of the tim
 Known gaps, tracked for later milestones:
 - **Graph width.** linux.git is 3,802 lanes wide in date order and 1,680 in topo order. These are real concurrent edges (long-lived merges from old bases). Rendering only touches the visible window, so it stays cheap, but a UX policy for very long edges (e.g. gitk-style arrow stubs) is worth adding in M3.
 - **Topo order** has no provisional screen (the time walk can't predict it), so its first screen waits for the full topology: ~340 ms on linux.git.
-- **No commit-graph file:** the engine shows the provisional screen, then runs `git commit-graph write --split` in the background (21 s on linux.git the first time) before loading the full graph. With writing disabled it parses every commit with libgit2.
+- **No commit-graph file:** the first screen is unaffected (23 ms on linux.git, rows still identical to the final layout), but parsing all 1.5M commits with libgit2 takes ~43 s. So the engine runs `git commit-graph write --split` in the background first (21 s on linux.git, once), then loads the full graph from it.
 - **Layout reuse** applies when new commits extend the top row's lane (e.g. you commit on the newest branch). Otherwise lanes shift and a full relayout runs, which costs ~20 ms on linux.git.
 - **Full status** with libgit2 is ~2× slower than `git status` on 100k files (202 vs ~87 ms). The save path uses targeted status (M5); M7 benchmarks gix.
 - **The graph cache is in memory only.** A full rebuild is ~0.5 s on linux.git, so a persistent cache isn't needed yet.
