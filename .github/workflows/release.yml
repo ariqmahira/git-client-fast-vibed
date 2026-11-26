@@ -1,13 +1,20 @@
 name: Release
 
 # Builds fgc for Linux, macOS and Windows and attaches the binaries to a
-# GitHub Release. Triggered by pushing a version tag, e.g.:
-#   git tag v0.1.0-preview.1 && git push origin v0.1.0-preview.1
+# GitHub Release. Two ways to start it:
+#   - push a version tag: git tag v0.1.0-preview.1 && git push origin v0.1.0-preview.1
+#   - run it manually (Actions → Release → Run workflow) with a tag name; the
+#     release (and its tag) is created on the commit the workflow ran on.
 # Tags with a hyphen (v0.1.0-preview.1) are published as pre-releases.
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create, e.g. v0.1.0-preview.1"
+        required: true
 
 permissions:
   contents: write
@@ -70,7 +77,7 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
           ls -la assets
@@ -87,4 +94,9 @@ jobs:
           EOF
           prerelease=""
           if [[ "$TAG" == *-* ]]; then prerelease="--prerelease"; fi
-          gh release create "$TAG" assets/* --title "fgc $TAG" --notes-file notes.md --verify-tag $prerelease
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            # Creates the tag on the commit this run built.
+            gh release create "$TAG" assets/* --title "fgc $TAG" --notes-file notes.md --target "$GITHUB_SHA" $prerelease
+          else
+            gh release create "$TAG" assets/* --title "fgc $TAG" --notes-file notes.md --verify-tag $prerelease
+          fi
