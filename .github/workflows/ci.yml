@@ -112,6 +112,7 @@ jobs:
   ui:
     name: UI budgets (headless GPUI)
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -119,7 +120,7 @@ jobs:
       - name: System packages (X11 headers, Xvfb, Mesa software Vulkan)
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb xdotool x11-utils mesa-vulkan-drivers \
+          sudo apt-get install -y xvfb openbox xdotool x11-utils mesa-vulkan-drivers \
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libx11-xcb-dev \
             fonts-dejavu-core fonts-inter
       - run: cargo build --release -p fgc-ui -p fgc-fixtures
@@ -136,9 +137,9 @@ jobs:
           # Warm-up launch: fills Mesa's shader cache (llvmpipe JIT-compiles
           # every pipeline on first use) and the page cache, so first-paint
           # measures the app, not software Vulkan's one-time compile.
-          scripts/ui-headless.sh ./target/release/fgc bench-repos/diff-5k --bench --bench-frames 5 --bench-inputs 2 > /dev/null
+          timeout 120 scripts/ui-headless.sh ./target/release/fgc bench-repos/diff-5k --bench --bench-frames 5 --bench-inputs 2 > /dev/null
           for p in history-200k diff-5k; do
-            scripts/ui-headless.sh ./target/release/fgc bench-repos/$p --bench \
+            timeout 600 scripts/ui-headless.sh ./target/release/fgc bench-repos/$p --bench \
               --budgets budgets.toml --profile $p --report ui-reports/$p.json
           done
       - uses: actions/upload-artifact@v4
@@ -172,7 +173,7 @@ jobs:
       - name: UI system packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb xdotool x11-utils mesa-vulkan-drivers \
+          sudo apt-get install -y xvfb openbox xdotool x11-utils mesa-vulkan-drivers \
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libx11-xcb-dev \
             fonts-dejavu-core fonts-inter
       - name: UI benchmark (linux.git)

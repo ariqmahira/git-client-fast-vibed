@@ -70,6 +70,9 @@ fn main() {
         eprintln!("fgc: --bench needs a repository");
         std::process::exit(2);
     }
+    if args.bench {
+        fgc_ui::bench::start_watchdog(std::time::Duration::from_secs(30));
+    }
     let bench = args.bench.then(|| {
         Bench::new(BenchOptions {
             frames: args.bench_frames,

@@ -28,6 +28,24 @@ use crate::view::{RepoView, SelectNext};
 
 pub static EXIT_CODE: AtomicI32 = AtomicI32::new(0);
 
+/// Set by the first benchmark step. If frames never start (e.g. a headless
+/// X server without a window manager), the watchdog exits instead of
+/// hanging a CI job.
+pub static TICKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn start_watchdog(limit: Duration) {
+    std::thread::spawn(move || {
+        std::thread::sleep(limit);
+        if !TICKED.load(Ordering::SeqCst) {
+            eprintln!(
+                "bench: no frame was drawn within {limit:?}; the window's frame clock never started \
+                 (headless X without a window manager? see scripts/ui-headless.sh)"
+            );
+            std::process::exit(3);
+        }
+    });
+}
+
 #[derive(Debug, Clone)]
 pub struct BenchOptions {
     pub frames: usize,
@@ -147,6 +165,7 @@ impl Bench {
         window: &mut Window,
         cx: &mut Context<RepoView>,
     ) -> bool {
+        TICKED.store(true, Ordering::SeqCst);
         self.step = match self.step {
             Step::WaitReady { warm } => {
                 let complete = view

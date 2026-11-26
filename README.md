@@ -56,7 +56,7 @@ cargo bench -p fgc-bench --bench backend
 scripts/ui-headless.sh ./target/release/fgc bench-repos/history-200k --bench --budgets budgets.toml --profile history-200k
 ```
 
-Linux build dependencies for GPUI: `libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libx11-xcb-dev`. Headless runs also need `xvfb xdotool x11-utils mesa-vulkan-drivers`.
+Linux build dependencies for GPUI: `libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libx11-xcb-dev`. Headless runs also need `xvfb openbox x11-utils mesa-vulkan-drivers`.
 
 ## Measured (4-core Linux container, release build, median of 5–7)
 
@@ -102,6 +102,6 @@ How to read these:
 - **Memory** is anonymous memory: what the app allocated. It excludes memory-mapped files and llvmpipe's mappings (its LLVM JIT and its "device memory", which live in VRAM on a real GPU). The report also has total RSS. On linux.git, total RSS is ~475 MB: 115 MB llvmpipe, 205 MB of libgit2's memory-mapped pack index (clean page cache the kernel can drop; `git` does the same), 15 MB binary, and the rest allocated.
 - **Text** appears progressively: at most 8 rows newly gain text per frame, so a jump fills in over ~4 frames instead of one slow frame.
 - No syntax highlighting yet (plan §5: tree-sitter in the background, swapped in without layout shift); the 5,000-line diff budget is met with plain text.
-- The headless harness has to unmap and remap the window once (`scripts/ui-headless.sh`): without a window manager, GPUI 0.2.2 never starts its frame clock on X11.
+- The headless harness runs Xvfb with openbox (`scripts/ui-headless.sh`): without a window manager, GPUI 0.2.2 can miss the window's map event on X11 and never start its frame clock.
 
 ### How the first screen is fast
